@@ -9,15 +9,19 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@privy-io/react-auth": "^1.99.1",
+    "@privy-io/wagmi": "^0.0.2",
+    "@tanstack/react-query": "^5.90.2",
     "clsx": "^2.0.0",
-    "tailwind-merge": "^2.0.0",
     "next": "^15.0.0",
     "react": "^18.0.0",
-    "react-dom": "^18.0.0"
+    "react-dom": "^18.0.0",
+    "tailwind-merge": "^2.0.0",
+    "wagmi": "^1.4.13"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/react": "^18.0.0",
+    "@types/react": "^18.3.25",
     "@types/react-dom": "^18.0.0",
     "autoprefixer": "^10.0.0",
     "eslint": "^8.0.0",
