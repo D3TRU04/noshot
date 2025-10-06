@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* playful dark gradient + faint dots */
+:root {
+  --bg1: #0b0f1a;
+  --bg2: #101828;
+  --violet: #8b5cf6;
+  --cyan: #22d3ee;
+}
+
+html, body { height: 100%; }
+
+body {
+  background:
+    radial-gradient(1000px 500px at 15% -10%, rgba(139,92,246,0.12), transparent 60%),
+    radial-gradient(1000px 500px at 110% 10%, rgba(34,211,238,0.12), transparent 60%),
+    linear-gradient(180deg, var(--bg1), var(--bg2));
+  color: #e5e7eb;
+}
+
+body::before{
+  content:"";
+  position:fixed; inset:0; pointer-events:none; opacity:.06;
+  background-image:
+    radial-gradient(circle at 22px 22px, #fff 1px, transparent 1px),
+    radial-gradient(circle at 62px 62px, #fff 1px, transparent 1px);
+  background-size: 80px 80px; mix-blend-mode: soft-light;
+}

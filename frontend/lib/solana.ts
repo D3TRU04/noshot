@@ -1,2 +1,0 @@
-// Solana utilities placeholder
-export {}

@@ -1,2 +1,0 @@
-// Environment configuration placeholder
-export {}
