@@ -3,7 +3,12 @@
 import { useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Logo from "@/components/Logo";
-import { WalletButton, useWalletConnected, useUser } from "@/components/PrivyAuth";
+import {
+  WalletButton,
+  useWalletConnected,
+  useUser,
+  getSolanaWallet,
+} from "@/components/PrivyAuth";
 import { cn } from "@/lib/utils";
 
 export default function Home() {
@@ -11,6 +16,9 @@ export default function Home() {
   const walletConnected = useWalletConnected();
   const canPlay = useMemo(() => walletConnected, [walletConnected]);
   const user = useUser();
+
+  // Always pick Solana wallet
+  const solWallet = getSolanaWallet(user);
 
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center px-4 py-8">
@@ -32,10 +40,10 @@ export default function Home() {
             <WalletButton />
           </div>
 
-          {/* Show connected wallet */}
-          {walletConnected && user?.wallet && (
+          {/* Show connected Solana wallet only */}
+          {walletConnected && solWallet && (
             <p className="mb-4 text-sm text-neutral-300">
-              Connected wallet: {user.wallet.address}
+              Connected Solana wallet: {solWallet.address}
             </p>
           )}
 
