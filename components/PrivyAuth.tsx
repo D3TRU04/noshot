@@ -1,86 +1,86 @@
 "use client";
 
-import { useState } from "react";
+import React from "react";
+import {
+  PrivyProvider,
+  usePrivy,
+  useLogin,
+  useLogout,
+  type PrivyClientConfig,
+} from "@privy-io/react-auth";
+import { toSolanaWalletConnectors } from "@privy-io/react-auth/solana";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-// TODO: Uncomment when Privy is properly configured
-// import { PrivyProvider, usePrivy } from "@privy-io/react-auth";
-// import { WagmiProvider } from "@privy-io/wagmi";
-// import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// import { createConfig, http } from "wagmi";
-// import { mainnet, polygon, arbitrum, optimism } from "wagmi/chains";
+const PRIVY_APP_ID: string =
+  process.env.NEXT_PUBLIC_PRIVY_APP_ID || "clx1234567890abcdef";
 
-// Placeholder for Privy App ID
-const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID || "clx1234567890abcdef";
+const queryClient = new QueryClient();
 
-// TODO: Uncomment when Privy is properly configured
-// const config = createConfig({
-//   chains: [mainnet, polygon, arbitrum, optimism],
-//   transports: {
-//     [mainnet.id]: http(),
-//     [polygon.id]: http(),
-//     [arbitrum.id]: http(),
-//     [optimism.id]: http(),
-//   },
-// });
+/**
+ * PrivyAuthProvider
+ * Provides Privy authentication context for the app.
+ * Ensures SMS logins create Solana wallets (not EVM).
+ */
+export function PrivyAuthProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}): JSX.Element {
+  const privyConfig: PrivyClientConfig = {
+    appearance: {
+      walletChainType: "solana-only",
+      walletList: ["phantom"],
+    },
+    loginMethods: ["wallet", "sms"],
 
-// const queryClient = new QueryClient();
+    // 👇 Ensure users logging in with phone numbers get a Solana wallet
+   embeddedWallets: {
+            solana: {
+                createOnLogin: 'users-without-wallets',
+            },
+        },
+    externalWallets: {
+      solana: {
+        connectors: toSolanaWalletConnectors(),
+      },
+    },
+  };
 
-export function PrivyAuthProvider({ children }: { children: React.ReactNode }) {
-  // TODO: Replace with actual Privy provider when configured
-  return <>{children}</>;
-  
-  // Uncomment when Privy is properly configured:
-  // return (
-  //   <PrivyProvider
-  //     appId={PRIVY_APP_ID}
-  //     config={{
-  //       appearance: {
-  //         theme: "dark",
-  //         accentColor: "#22d3ee",
-  //       },
-  //       embeddedWallets: {
-  //         createOnLogin: "users-without-wallets",
-  //       },
-  //       loginMethods: ["email", "wallet", "sms"],
-  //     }}
-  //   >
-  //     <QueryClientProvider client={queryClient}>
-  //       <WagmiProvider config={config}>
-  //         {children}
-  //       </WagmiProvider>
-  //     </QueryClientProvider>
-  //   </PrivyProvider>
-  // );
+  return (
+    <QueryClientProvider client={queryClient}>
+      <PrivyProvider appId={PRIVY_APP_ID} config={privyConfig}>
+        {children}
+      </PrivyProvider>
+    </QueryClientProvider>
+  );
 }
 
-export function WalletButton() {
-  // TODO: Replace with actual Privy hooks when configured
-  const [isConnected, setIsConnected] = useState(false);
-  const [userInfo, setUserInfo] = useState("");
+/**
+ * WalletButton
+ * Renders login / logout button depending on auth state.
+ */
+export function WalletButton(): JSX.Element {
+  const { ready, authenticated, user } = usePrivy();
+  const { login } = useLogin();
+  const { logout } = useLogout();
 
-  const handleConnect = () => {
-    // TESTING MODE: Auto-connect for easy testing
-    setIsConnected(true);
-    setUserInfo("demo@example.com");
-    console.log("[TEST MODE] Wallet connected automatically for testing");
-  };
+  if (!ready) return <button disabled>Loading...</button>;
 
-  const handleDisconnect = () => {
-    // Placeholder: Simulate wallet disconnection
-    setIsConnected(false);
-    setUserInfo("");
-    console.log("[TEST MODE] Wallet disconnected");
-  };
+  if (authenticated) {
+    // Grab Solana wallet specifically
+    const solanaWallet =
+      user?.linkedAccounts?.find(
+        (acc) => acc.type === "wallet" && acc.chainType === "solana"
+      )?.address ?? "Unknown wallet";
 
-  if (isConnected) {
     return (
       <div className="flex items-center gap-3">
         <span className="text-sm text-neutral-300">
-          {userInfo || "Connected"}
+          {solanaWallet.slice(0, 6)}...{solanaWallet.slice(-4)}
         </span>
         <button
-          onClick={handleDisconnect}
-          className="rounded-xl bg-white/10 px-4 py-2 text-sm font-normal backdrop-blur-md hover:bg-white/20 transition-colors"
+          onClick={logout}
+          className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/20 transition"
         >
           Disconnect
         </button>
@@ -90,19 +90,23 @@ export function WalletButton() {
 
   return (
     <button
-      onClick={handleConnect}
-      className="w-full rounded-xl bg-white/10 px-4 py-3 text-sm font-normal backdrop-blur-md hover:bg-white/20 transition-colors"
+      onClick={() => login()}
+      className="w-full rounded-xl bg-white/10 px-4 py-3 text-sm hover:bg-white/20 transition"
     >
-      Connect Wallet
+      Connect Phantom / Phone
     </button>
   );
 }
 
-export function useWalletConnected() {
-  // TESTING MODE: Always return true for easy testing
-  return true;
-  
-  // TODO: Replace with actual Privy hook when configured:
-  // const { authenticated, user } = usePrivy();
-  // return Boolean(authenticated && user);
+/**
+ * useWalletConnected
+ * Returns true if authenticated and has a Solana wallet.
+ */
+export function useWalletConnected(): boolean {
+  const { authenticated, user } = usePrivy();
+  const hasSolanaWallet = user?.linkedAccounts?.some(
+    (acc) => acc.type === "wallet" && acc.chainType === "solana"
+  );
+
+  return Boolean(authenticated && hasSolanaWallet);
 }
