@@ -28,6 +28,7 @@ export function PrivyAuthProvider({
 }): JSX.Element {
   const privyConfig: PrivyClientConfig = {
     appearance: {
+      showWalletLoginFirst: true,
       walletChainType: "solana-only",
       walletList: ["phantom"],
     },
