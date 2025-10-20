@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect } from "react";
 import {
   PrivyProvider,
   usePrivy,
@@ -10,7 +10,7 @@ import {
 } from "@privy-io/react-auth";
 import { toSolanaWalletConnectors } from "@privy-io/react-auth/solana";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-
+import { upsertUserProfile } from "@/lib/supabaseProfiles";
 const PRIVY_APP_ID: string =
   process.env.NEXT_PUBLIC_PRIVY_APP_ID || "clx1234567890abcdef";
 
@@ -65,20 +65,43 @@ export function WalletButton(): JSX.Element {
   const { login } = useLogin();
   const { logout } = useLogout();
 
+  useEffect(() => {
+    if (authenticated && user) {
+      const solanaWallet = user.linkedAccounts.find(
+        (acc) => acc.type === "wallet" && acc.chainType === "solana"
+      ) as { address?: string };
+      const phone = user.linkedAccounts.find((acc) => acc.type === "phone");
+
+      if (solanaWallet?.address) {
+        upsertUserProfile({
+          walletAddress: solanaWallet.address,
+          phoneNumber: (phone as any)?.phoneNumber,
+        }).then((profile) => {
+          console.log("✅ Synced profile to Supabase:", profile);
+        });
+      }
+    }
+  }, [authenticated, user]);
   if (!ready) return <button disabled>Loading...</button>;
 
   if (authenticated) {
-    // Grab Solana wallet specifically
-    const solanaWallet =
-      user?.linkedAccounts?.find(
-        (acc) => acc.type === "wallet" && acc.chainType === "solana"
-      )?.address ?? "Unknown wallet";
+    // Find the Solana wallet (if it exists)
+    const solanaWallet = user?.linkedAccounts?.find(
+      (acc: any) => acc.type === "wallet" && acc.chainType === "solana"
+    ) as { address?: string };
+
+    const address = solanaWallet?.address;
 
     return (
       <div className="flex items-center gap-3">
-        <span className="text-sm text-neutral-300">
-          {solanaWallet.slice(0, 6)}...{solanaWallet.slice(-4)}
-        </span>
+        {address ? (
+          <span className="text-sm text-neutral-300">
+            {address.slice(0, 6)}...{address.slice(-4)}
+          </span>
+        ) : (
+          <span className="text-sm text-red-400">No wallet found</span>
+        )}
+
         <button
           onClick={logout}
           className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/20 transition"

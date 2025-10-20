@@ -4,39 +4,128 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Logo from "@/components/Logo";
 import BackButton from "@/components/BackButton";
-import { cn } from "@/lib/utils";
+import { supabase } from "@/lib/supabaseClient";
+import { usePrivy } from "@privy-io/react-auth";
 
 export default function GroupSelection() {
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [groupCode, setGroupCode] = useState("");
   const router = useRouter();
+  const { user } = usePrivy();
 
+  // helper: generate 6-character group code
   const generateGroupCode = () => {
-    // Generate a random 6-character code
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let result = "";
-    for (let i = 0; i < 6; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
+    return Array.from({ length: 6 }, () =>
+      chars.charAt(Math.floor(Math.random() * chars.length))
+    ).join("");
   };
 
+  // navigate to group creation page
   const handleCreateGroup = () => {
-    router.push('/create-group');
+    router.push("/create-group");
   };
 
-  const handleJoinGroup = () => {
-    setShowJoinModal(true);
+  // handle join logic
+  const handleJoinGroup = async () => {
+    if (!user) {
+      alert("Please log in first.");
+      return;
+    }
+
+    // get solana wallet
+    const solanaWallet = user?.linkedAccounts.find(
+      (acc: any) => acc.type === "wallet" && acc.chainType === "solana"
+    );
+    const walletAddress = (solanaWallet as { address?: string })?.address ?? null;
+
+    if (!walletAddress) {
+      alert("No Solana wallet found. Please reconnect.");
+      return;
+    }
+
+    // update last_login in profiles (or insert if not exists)
+    const { data: existingProfile } = await supabase
+      .from("profiles")
+      .select("wallet_address")
+      .eq("wallet_address", walletAddress)
+      .maybeSingle();
+
+    if (existingProfile) {
+      await supabase
+        .from("profiles")
+        .update({ last_login: new Date().toISOString() })
+        .eq("wallet_address", walletAddress);
+    } else {
+      await supabase
+        .from("profiles")
+        .insert({
+          wallet_address: walletAddress,
+          last_login: new Date().toISOString(),
+        });
+    }
+
+    // verify group exists
+    const { data: group, error: groupError } = await supabase
+      .from("groups")
+      .select("*")
+      .eq("code", groupCode)
+      .single();
+
+    if (groupError || !group) {
+      alert("Group not found.");
+      return;
+    }
+
+    // prevent duplicate join
+    const { data: existingMember } = await supabase
+      .from("group_members")
+      .select("id")
+      .eq("group_id", group.id)
+      .eq("wallet_address", walletAddress)
+      .maybeSingle();
+
+    if (existingMember) {
+      alert("You are already in this group!");
+      return;
+    }
+
+    // check if group is full
+    if (group.max_members && group.max_members > 0) {
+      const { count } = await supabase
+        .from("group_members")
+        .select("*", { count: "exact", head: true })
+        .eq("group_id", group.id);
+
+      if (count && count >= group.max_members) {
+        alert("This group is already full.");
+        return;
+      }
+    }
+
+    // add to group_members
+    const { error: insertError } = await supabase.from("group_members").insert({
+      group_id: group.id,
+      wallet_address: walletAddress,
+    });
+
+    if (insertError) {
+      alert("Error joining group: " + insertError.message);
+      return;
+    }
+
+    alert("Successfully joined group!");
+    setShowJoinModal(false);
+    router.push(`/group/${group.id}`); // optional redirect
   };
 
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center px-4 py-8">
       <BackButton />
 
-      {/* Main Content - Centered */}
+      {/* Main Content */}
       <div className="w-full max-w-md space-y-8 text-center">
-        {/* Logo */}
         <div className="mb-8">
           <Logo />
         </div>
@@ -46,7 +135,7 @@ export default function GroupSelection() {
           <h1 className="mb-6 text-2xl font-normal text-neutral-200">
             Start Your Bet
           </h1>
-          
+
           <div className="space-y-4">
             {/* Create Group Button */}
             <button
@@ -58,7 +147,7 @@ export default function GroupSelection() {
 
             {/* Join Group Button */}
             <button
-              onClick={handleJoinGroup}
+              onClick={() => setShowJoinModal(true)}
               className="w-full h-14 rounded-xl bg-white/10 text-neutral-200 font-normal hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/30 transition-colors"
             >
               Join Existing Group
@@ -66,20 +155,23 @@ export default function GroupSelection() {
           </div>
 
           <p className="mt-6 text-sm text-neutral-400">
-            Create a group to start betting with friends, or join an existing group with a code.
+            Create a group to start betting with friends, or join an existing
+            group with a code.
           </p>
         </div>
       </div>
 
-      {/* Join Group Modal */}
+      {/* JOIN GROUP MODAL */}
       {showJoinModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6 w-full max-w-sm">
-            <h2 className="text-xl font-normal text-neutral-200 mb-4">Join Group</h2>
+            <h2 className="text-xl font-normal text-neutral-200 mb-4">
+              Join Group
+            </h2>
             <p className="text-sm text-neutral-400 mb-6">
               Enter the group code shared by your friend
             </p>
-            
+
             <div className="space-y-4">
               <input
                 type="text"
@@ -89,7 +181,7 @@ export default function GroupSelection() {
                 onChange={(e) => setGroupCode(e.target.value.toUpperCase())}
                 value={groupCode}
               />
-              
+
               <div className="flex gap-3">
                 <button
                   onClick={() => setShowJoinModal(false)}
@@ -98,13 +190,7 @@ export default function GroupSelection() {
                   Cancel
                 </button>
                 <button
-                  onClick={() => {
-                    if (groupCode.length === 6) {
-                      console.log(`Joining group with code: ${groupCode}`);
-                      // TODO: Implement actual join logic
-                      setShowJoinModal(false);
-                    }
-                  }}
+                  onClick={handleJoinGroup}
                   disabled={groupCode.length !== 6}
                   className="flex-1 rounded-xl bg-cyan-400 text-black font-normal disabled:bg-white/10 disabled:text-neutral-400 disabled:cursor-not-allowed hover:bg-cyan-300 transition-colors"
                 >
@@ -116,15 +202,17 @@ export default function GroupSelection() {
         </div>
       )}
 
-      {/* Invite Code Modal */}
+      {/* INVITE MODAL (used after creating group) */}
       {showInviteModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6 w-full max-w-sm">
-            <h2 className="text-xl font-normal text-neutral-200 mb-4">Group Created!</h2>
+            <h2 className="text-xl font-normal text-neutral-200 mb-4">
+              Group Created!
+            </h2>
             <p className="text-sm text-neutral-400 mb-6">
               Share this code with your friends to let them join your group
             </p>
-            
+
             <div className="space-y-4">
               <div className="bg-white/10 rounded-xl p-4 text-center">
                 <div className="text-3xl font-mono tracking-widest text-cyan-300 mb-2">
@@ -132,17 +220,17 @@ export default function GroupSelection() {
                 </div>
                 <p className="text-xs text-neutral-500">Group Code</p>
               </div>
-              
+
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(groupCode);
-                  // TODO: Show success message
+                  alert("Copied to clipboard!");
                 }}
                 className="w-full rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 transition-colors py-3"
               >
                 Copy Code
               </button>
-              
+
               <button
                 onClick={() => setShowInviteModal(false)}
                 className="w-full rounded-xl bg-white/10 text-neutral-200 font-normal hover:bg-white/20 transition-colors py-3"
