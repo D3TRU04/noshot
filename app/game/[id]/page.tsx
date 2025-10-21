@@ -42,12 +42,19 @@ export default function GamePage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [bets, setBets] = useState<Bet[]>([]);
   const [loading, setLoading] = useState(true);
-  const [timeRemaining, setTimeRemaining] = useState<string>("");
+  const [timeRemaining, setTimeRemaining] = useState<string>("Loading...");
   const [betAmount, setBetAmount] = useState(1);
   const [betSide, setBetSide] = useState<'yes' | 'no'>('yes');
   const [placingBet, setPlacingBet] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [betAnimation, setBetAnimation] = useState<'none' | 'yes' | 'no'>('none');
+  const [settingsData, setSettingsData] = useState({
+    name: '',
+    betDescription: '',
+    maxMembers: '',
+    betDurationHours: 24
+  });
+  const [timerStartTime, setTimerStartTime] = useState<Date | null>(null);
 
   useEffect(() => {
     if (!groupId) return;
@@ -63,10 +70,18 @@ export default function GamePage() {
         .single();
 
       if (groupError || !groupData) {
+        console.error("Group fetch error:", groupError);
         alert("Group not found.");
         router.push("/group-selection");
         return;
       }
+
+      console.log("Group data:", {
+        id: groupData.id,
+        created_at: groupData.created_at,
+        bet_duration_hours: groupData.bet_duration_hours,
+        name: groupData.name
+      });
 
       setGroup(groupData);
 
@@ -86,6 +101,16 @@ export default function GamePage() {
       // 3️⃣ Get bets (placeholder - you'll need to create a bets table)
       // For now, we'll use empty array
       setBets([]);
+      
+      // Populate settings data only if group exists
+      if (group) {
+        setSettingsData({
+          name: group.name || '',
+          betDescription: group.bet_description || '',
+          maxMembers: group.max_members?.toString() || '',
+          betDurationHours: group.bet_duration_hours || 24
+        });
+      }
 
       setLoading(false);
     };
@@ -95,32 +120,48 @@ export default function GamePage() {
 
   // Calculate time remaining
   useEffect(() => {
-    if (!group) return;
+    if (!group || !group.bet_duration_hours) {
+      setTimeRemaining("Loading...");
+      return;
+    }
 
     const updateTimer = () => {
-      const now = new Date();
-      const createdAt = new Date(group.created_at);
-      const endTime = new Date(createdAt.getTime() + group.bet_duration_hours * 60 * 60 * 1000);
-      
-      const diff = endTime.getTime() - now.getTime();
-      
-      if (diff <= 0) {
-        setTimeRemaining("Betting closed");
-        return;
+      try {
+        const now = new Date();
+        
+        // Use timer start time if available (for updated durations), otherwise use created_at
+        const startTime = timerStartTime || new Date(group.created_at);
+        
+        // Check if start time is valid
+        if (isNaN(startTime.getTime())) {
+          setTimeRemaining("Invalid date");
+          return;
+        }
+        
+        const endTime = new Date(startTime.getTime() + group.bet_duration_hours * 60 * 60 * 1000);
+        const diff = endTime.getTime() - now.getTime();
+        
+        if (diff <= 0) {
+          setTimeRemaining("Betting closed");
+          return;
+        }
+
+        const hours = Math.floor(diff / (1000 * 60 * 60));
+        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+        setTimeRemaining(`${hours}h ${minutes}m ${seconds}s`);
+      } catch (error) {
+        console.error('Timer calculation error:', error);
+        setTimeRemaining("Error calculating time");
       }
-
-      const hours = Math.floor(diff / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-
-      setTimeRemaining(`${hours}h ${minutes}m ${seconds}s`);
     };
 
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
 
     return () => clearInterval(interval);
-  }, [group]);
+  }, [group, timerStartTime]);
 
   const isCreator = user && group && user.linkedAccounts?.find(
     (acc: any) => acc.type === "wallet" && acc.chainType === "solana" && acc.address === group.creator_wallet
@@ -161,6 +202,56 @@ export default function GamePage() {
     if (group) {
       navigator.clipboard.writeText(group.code);
       alert(`Group code ${group.code} copied to clipboard!`);
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    if (!group) return;
+
+    try {
+      const { error } = await supabase
+        .from('groups')
+        .update({
+          name: settingsData.name || `Group ${group.code}`,
+          bet_description: settingsData.betDescription,
+          max_members: settingsData.maxMembers ? parseInt(settingsData.maxMembers) : null,
+          bet_duration_hours: settingsData.betDurationHours
+        })
+        .eq('id', group.id);
+
+      if (error) {
+        console.error('Error updating group:', error);
+        alert('Error updating group settings: ' + error.message);
+        return;
+      }
+
+      // Check if betting duration changed
+      const durationChanged = group.bet_duration_hours !== settingsData.betDurationHours;
+      
+      // Update local group data
+      setGroup({
+        ...group,
+        name: settingsData.name || `Group ${group.code}`,
+        bet_description: settingsData.betDescription,
+        max_members: settingsData.maxMembers ? parseInt(settingsData.maxMembers) : null,
+        bet_duration_hours: settingsData.betDurationHours
+      });
+
+      // If duration changed, reset timer to current time
+      if (durationChanged) {
+        setTimerStartTime(new Date());
+        console.log('Timer reset due to duration change:', {
+          oldDuration: group.bet_duration_hours,
+          newDuration: settingsData.betDurationHours,
+          newStartTime: new Date()
+        });
+      }
+
+      alert('Group settings updated successfully!');
+      setShowSettings(false);
+    } catch (err) {
+      console.error('Unexpected error:', err);
+      alert('Unexpected error updating settings');
     }
   };
 
@@ -431,7 +522,8 @@ export default function GamePage() {
                 <label className="block text-sm text-neutral-300 mb-2">Group Name</label>
                 <input
                   type="text"
-                  value={group.name || ''}
+                  value={settingsData.name}
+                  onChange={(e) => setSettingsData({...settingsData, name: e.target.value})}
                   className="w-full rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60"
                   placeholder="Enter group name"
                 />
@@ -440,7 +532,8 @@ export default function GamePage() {
               <div>
                 <label className="block text-sm text-neutral-300 mb-2">Bet Description</label>
                 <textarea
-                  value={group.bet_description || ''}
+                  value={settingsData.betDescription}
+                  onChange={(e) => setSettingsData({...settingsData, betDescription: e.target.value})}
                   rows={3}
                   className="w-full rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60 resize-none"
                   placeholder="Enter bet description"
@@ -451,10 +544,32 @@ export default function GamePage() {
                 <label className="block text-sm text-neutral-300 mb-2">Max Members</label>
                 <input
                   type="number"
-                  value={group.max_members || ''}
+                  value={settingsData.maxMembers}
+                  onChange={(e) => setSettingsData({...settingsData, maxMembers: e.target.value})}
                   className="w-full rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60"
                   placeholder="Enter max members"
                 />
+              </div>
+              
+              <div>
+                <label className="block text-sm text-neutral-300 mb-2">Betting Duration (Hours)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="168"
+                  value={settingsData.betDurationHours}
+                  onChange={(e) => setSettingsData({...settingsData, betDurationHours: parseInt(e.target.value) || 24})}
+                  className="w-full rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60"
+                  placeholder="Enter duration in hours"
+                />
+                <p className="text-xs text-neutral-400 mt-1">
+                  Current: {group.bet_duration_hours} hours | New: {settingsData.betDurationHours} hours
+                  {group.bet_duration_hours !== settingsData.betDurationHours && (
+                    <span className="block text-cyan-300 mt-1">
+                      ⚠️ Timer will reset to current time when saved
+                    </span>
+                  )}
+                </p>
               </div>
             </div>
             
@@ -466,11 +581,7 @@ export default function GamePage() {
                 Cancel
               </button>
               <button
-                onClick={() => {
-                  // TODO: Implement settings update
-                  alert("Settings updated!");
-                  setShowSettings(false);
-                }}
+                onClick={handleSaveSettings}
                 className="flex-1 rounded-xl bg-cyan-400 text-black hover:bg-cyan-300 transition-colors py-3"
               >
                 Save Changes
