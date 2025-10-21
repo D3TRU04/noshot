@@ -50,7 +50,7 @@ export default function Home() {
           >
             {!walletConnected ? "Connect wallet to continue" : "Start Playing"}
           </button>
-        </div>
+        </div> 
 
         {/* Simple Description */}
         <p className="text-sm text-neutral-400 max-w-sm mx-auto">

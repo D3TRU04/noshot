@@ -1,20 +1,86 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Logo from "@/components/Logo";
 import BackButton from "@/components/BackButton";
 import { supabase } from "@/lib/supabaseClient";
 import { usePrivy } from "@privy-io/react-auth";
 
+type Group = {
+  id: string;
+  code: string;
+  max_members: number | null;
+  memberCount?: number;
+};
+
 export default function GroupSelection() {
-  const [showJoinModal, setShowJoinModal] = useState(false);
-  const [showInviteModal, setShowInviteModal] = useState(false);
-  const [groupCode, setGroupCode] = useState("");
   const router = useRouter();
   const { user } = usePrivy();
 
-  // helper: generate 6-character group code
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [joining, setJoining] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  // Join states
+  const [groupCodeInput, setGroupCodeInput] = useState("");
+
+  // Create states
+  const [maxPlayers, setMaxPlayers] = useState(4);
+  const [isInfinite, setIsInfinite] = useState(false);
+  const [bettingTime, setBettingTime] = useState(24);
+  const [groupCode, setGroupCode] = useState("");
+  const [codeGenerated, setCodeGenerated] = useState(false);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+
+  // Fetch user's groups
+  useEffect(() => {
+    if (!user) return;
+
+    const fetchGroups = async () => {
+      setLoading(true);
+
+      const solanaWallet = user.linkedAccounts.find(
+        (acc: any) => acc.type === "wallet" && acc.chainType === "solana"
+      );
+      const walletAddress = (solanaWallet as { address?: string })?.address ?? null;
+      if (!walletAddress) return;
+
+      const { data: memberships, error } = await supabase
+        .from("group_members")
+        .select("group_id, groups(code, max_members)")
+        .eq("wallet_address", walletAddress);
+
+      if (error) {
+        console.error(error);
+        setLoading(false);
+        return;
+      }
+
+      const fetchedGroups: Group[] = (memberships || []).map((m: any) => ({
+        id: m.group_id,
+        code: m.groups.code,
+        max_members: m.groups.max_members,
+      }));
+
+      for (let i = 0; i < fetchedGroups.length; i++) {
+        const { count } = await supabase
+          .from("group_members")
+          .select("*", { count: "exact", head: true })
+          .eq("group_id", fetchedGroups[i].id);
+        fetchedGroups[i].memberCount = count || 0;
+      }
+
+      setGroups(fetchedGroups);
+      setLoading(false);
+    };
+
+    fetchGroups();
+  }, [user]);
+
+  // Generate group code
   const generateGroupCode = () => {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     return Array.from({ length: 6 }, () =>
@@ -22,89 +88,39 @@ export default function GroupSelection() {
     ).join("");
   };
 
-  // navigate to group creation page
-  const handleCreateGroup = () => {
-    router.push("/create-group");
-  };
-
-  // handle join logic
+  // Handle Join
   const handleJoinGroup = async () => {
-    if (!user) {
-      alert("Please log in first.");
-      return;
-    }
+    if (!user) return;
 
-    // get solana wallet
-    const solanaWallet = user?.linkedAccounts.find(
+    const solanaWallet = user.linkedAccounts.find(
       (acc: any) => acc.type === "wallet" && acc.chainType === "solana"
     );
     const walletAddress = (solanaWallet as { address?: string })?.address ?? null;
+    if (!walletAddress) return;
 
-    if (!walletAddress) {
-      alert("No Solana wallet found. Please reconnect.");
-      return;
-    }
-
-    // update last_login in profiles (or insert if not exists)
-    const { data: existingProfile } = await supabase
-      .from("profiles")
-      .select("wallet_address")
-      .eq("wallet_address", walletAddress)
-      .maybeSingle();
-
-    if (existingProfile) {
-      await supabase
-        .from("profiles")
-        .update({ last_login: new Date().toISOString() })
-        .eq("wallet_address", walletAddress);
-    } else {
-      await supabase
-        .from("profiles")
-        .insert({
-          wallet_address: walletAddress,
-          last_login: new Date().toISOString(),
-        });
-    }
-
-    // verify group exists
     const { data: group, error: groupError } = await supabase
       .from("groups")
       .select("*")
-      .eq("code", groupCode)
+      .eq("code", groupCodeInput)
       .single();
 
     if (groupError || !group) {
-      alert("Group not found.");
+      alert("Group not found!");
       return;
     }
 
-    // prevent duplicate join
-    const { data: existingMember } = await supabase
+    const { data: existing } = await supabase
       .from("group_members")
       .select("id")
       .eq("group_id", group.id)
       .eq("wallet_address", walletAddress)
       .maybeSingle();
 
-    if (existingMember) {
-      alert("You are already in this group!");
+    if (existing) {
+      alert("You're already in this group!");
       return;
     }
 
-    // check if group is full
-    if (group.max_members && group.max_members > 0) {
-      const { count } = await supabase
-        .from("group_members")
-        .select("*", { count: "exact", head: true })
-        .eq("group_id", group.id);
-
-      if (count && count >= group.max_members) {
-        alert("This group is already full.");
-        return;
-      }
-    }
-
-    // add to group_members
     const { error: insertError } = await supabase.from("group_members").insert({
       group_id: group.id,
       wallet_address: walletAddress,
@@ -115,129 +131,274 @@ export default function GroupSelection() {
       return;
     }
 
-    alert("Successfully joined group!");
-    setShowJoinModal(false);
-    router.push(`/group/${group.id}`); // optional redirect
+    alert("Joined group!");
+    setShowModal(false);
+    router.push(`/group/${group.id}`);
+  };
+
+  // Handle Create
+  const handleCreateGroup = async () => {
+    if (!user) {
+      alert("You must be logged in to create a group.");
+      return;
+    }
+
+    const solanaWallet = user.linkedAccounts.find(
+      (acc: any) => acc.type === "wallet" && acc.chainType === "solana"
+    ) as { address?: string } | undefined;
+    const creatorWallet = solanaWallet?.address;
+    if (!creatorWallet) {
+      alert("No Solana wallet found. Please reconnect.");
+      return;
+    }
+
+    if (!groupCode) {
+      alert("Please generate a group code first.");
+      return;
+    }
+
+    setCreatingGroup(true);
+
+    const { data: group, error } = await supabase
+      .from("groups")
+      .insert({
+        code: groupCode,
+        creator_wallet: creatorWallet,
+        max_members: isInfinite ? null : maxPlayers,
+        bet_duration_hours: bettingTime,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error(error);
+      alert("Error creating group: " + error.message);
+      setCreatingGroup(false);
+      return;
+    }
+
+    const { error: memberError } = await supabase.from("group_members").insert({
+      group_id: group.id,
+      wallet_address: creatorWallet,
+      is_creator: true,
+    });
+
+    if (memberError) {
+      console.error(memberError);
+      alert("Error adding group member: " + memberError.message);
+      setCreatingGroup(false);
+      return;
+    }
+
+    setCreatingGroup(false);
+    setShowModal(false);
+    router.push(`/group/${group.id}`);
   };
 
   return (
-    <div className="flex min-h-dvh flex-col items-center justify-center px-4 py-8">
+    <div className="min-h-dvh w-full flex flex-col items-center justify-start px-8 py-12 bg-gradient-to-b from-neutral-950 via-neutral-900/80 to-neutral-950/60 text-neutral-100 backdrop-blur-md">
       <BackButton />
 
-      {/* Main Content */}
-      <div className="w-full max-w-md space-y-8 text-center">
-        <div className="mb-8">
+      <div className="w-full max-w-6xl">
+        <div className="flex flex-col items-center mb-16">
           <Logo />
-        </div>
-
-        {/* Group Selection Card */}
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-8 backdrop-blur-md shadow-[0_10px_50px_-15px_rgba(0,0,0,0.5)]">
-          <h1 className="mb-6 text-2xl font-normal text-neutral-200">
-            Start Your Bet
-          </h1>
-
-          <div className="space-y-4">
-            {/* Create Group Button */}
-            <button
-              onClick={handleCreateGroup}
-              className="w-full h-14 rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 focus:outline-none focus:ring-2 focus:ring-cyan-200 transition-colors"
-            >
-              Create New Group
-            </button>
-
-            {/* Join Group Button */}
-            <button
-              onClick={() => setShowJoinModal(true)}
-              className="w-full h-14 rounded-xl bg-white/10 text-neutral-200 font-normal hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/30 transition-colors"
-            >
-              Join Existing Group
-            </button>
-          </div>
-
-          <p className="mt-6 text-sm text-neutral-400">
-            Create a group to start betting with friends, or join an existing
-            group with a code.
+          <h1 className="text-4xl font-semibold text-neutral-200 mt-6">Your Groups</h1>
+          <p className="text-neutral-400 mt-2 text-sm">
+            Manage your friend circles or start a new one
           </p>
         </div>
+
+        {loading ? (
+          <p className="text-neutral-400 text-center">Loading groups...</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-10">
+            {groups.map((g) => (
+              <div
+                key={g.id}
+                onClick={() => router.push(`/group/${g.id}`)}
+                className="cursor-pointer rounded-2xl border border-white/10 bg-white/5 p-10 flex flex-col items-center justify-center hover:bg-white/10 transition-all backdrop-blur-md shadow-[0_10px_40px_-10px_rgba(0,0,0,0.4)] min-h-[220px]"
+              >
+                <p className="font-mono text-cyan-300 text-3xl mb-3 tracking-widest">{g.code}</p>
+                {g.max_members && (
+                  <p className="text-sm text-neutral-400">{g.max_members} max</p>
+                )}
+                <p className="text-sm text-neutral-400 mt-2">
+                  {g.memberCount || 0} members
+                </p>
+              </div>
+            ))}
+
+            {/* Add new group card */}
+            <div
+              onClick={() => setShowModal(true)}
+              className="cursor-pointer rounded-2xl border border-white/10 bg-cyan-400/10 p-10 flex items-center justify-center text-7xl font-bold text-cyan-300 hover:bg-cyan-300/20 hover:text-cyan-200 transition-all backdrop-blur-md shadow-[0_10px_40px_-10px_rgba(0,0,0,0.4)] min-h-[220px]"
+            >
+              +
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* JOIN GROUP MODAL */}
-      {showJoinModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6 w-full max-w-sm">
-            <h2 className="text-xl font-normal text-neutral-200 mb-4">
-              Join Group
-            </h2>
-            <p className="text-sm text-neutral-400 mb-6">
-              Enter the group code shared by your friend
-            </p>
-
-            <div className="space-y-4">
-              <input
-                type="text"
-                placeholder="Enter 6-digit code"
-                maxLength={6}
-                className="w-full rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60 placeholder:text-neutral-500 text-center text-lg tracking-widest"
-                onChange={(e) => setGroupCode(e.target.value.toUpperCase())}
-                value={groupCode}
-              />
-
-              <div className="flex gap-3">
+      {/* JOIN / CREATE MODAL */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+          <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-8 w-full max-w-md shadow-xl overflow-y-auto max-h-[90vh] flex flex-col items-center justify-center">
+            {/* Mode Selector */}
+            {!joining && !creating && (
+              <div className="w-full text-center space-y-4">
+                <h2 className="text-2xl font-normal text-neutral-200 mb-6">Start or Join a Group</h2>
                 <button
-                  onClick={() => setShowJoinModal(false)}
-                  className="flex-1 rounded-xl bg-white/10 px-4 py-3 text-sm font-normal hover:bg-white/20 transition-colors"
+                  onClick={() => setJoining(true)}
+                  className="w-full rounded-xl bg-cyan-400 text-black font-medium hover:bg-cyan-300 transition-colors py-3"
+                >
+                  Join Group
+                </button>
+                <button
+                  onClick={() => setCreating(true)}
+                  className="w-full rounded-xl bg-white/10 text-neutral-200 font-medium hover:bg-white/20 transition-colors py-3"
+                >
+                  Create Group
+                </button>
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="w-full rounded-xl bg-white/5 text-neutral-400 font-medium hover:bg-white/10 transition-colors py-3"
                 >
                   Cancel
                 </button>
+              </div>
+            )}
+
+            {/* Join Form */}
+            {joining && (
+              <div className="w-full text-center">
+                <h2 className="text-2xl font-normal text-neutral-200 mb-4">Join Group</h2>
+                <p className="text-sm text-neutral-400 mb-6">
+                  Enter the 6-character group code
+                </p>
+                <input
+                  type="text"
+                  placeholder="Enter code"
+                  maxLength={6}
+                  className="w-full rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60 placeholder:text-neutral-500 text-center text-lg tracking-widest mb-4"
+                  onChange={(e) => setGroupCodeInput(e.target.value.toUpperCase())}
+                  value={groupCodeInput}
+                />
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setJoining(false)}
+                    className="flex-1 rounded-xl bg-white/10 px-4 py-3 text-sm font-normal hover:bg-white/20 transition-colors"
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={handleJoinGroup}
+                    disabled={groupCodeInput.length !== 6}
+                    className="flex-1 rounded-xl bg-cyan-400 text-black font-normal disabled:bg-white/10 disabled:text-neutral-400 disabled:cursor-not-allowed hover:bg-cyan-300 transition-colors"
+                  >
+                    Join
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Create Form */}
+            {creating && (
+              <div className="w-full text-center space-y-6">
+                <h2 className="text-2xl font-normal text-neutral-200 mb-4">Create Group</h2>
+
+                {/* Max Players */}
+                <div>
+                  <label className="block text-sm text-neutral-300 mb-3">
+                    Maximum Players
+                  </label>
+                  <div className="flex flex-col items-center">
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={isInfinite ? "" : maxPlayers}
+                      onChange={(e) =>
+                        setMaxPlayers(parseInt(e.target.value) || 1)
+                      }
+                      disabled={isInfinite}
+                      className="w-24 rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60 text-center"
+                    />
+                    <div className="flex items-center justify-center gap-2 mt-2">
+                      <input
+                        type="checkbox"
+                        id="infinite"
+                        checked={isInfinite}
+                        onChange={(e) => setIsInfinite(e.target.checked)}
+                        className="w-4 h-4 rounded border-white/20 bg-white/5 text-cyan-400 focus:ring-2 focus:ring-cyan-300/60"
+                      />
+                      <label htmlFor="infinite" className="text-sm text-neutral-300 cursor-pointer">
+                        Infinite
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Betting Time */}
+                <div>
+                  <label className="block text-sm text-neutral-300 mb-3">
+                    Betting Time (hours)
+                  </label>
+                  <div className="flex items-center justify-center space-x-4">
+                    <button
+                      onClick={() => setBettingTime(Math.max(1, bettingTime - 1))}
+                      className="w-10 h-10 rounded-xl bg-white/10 text-neutral-300 hover:bg-white/20 transition-colors flex items-center justify-center"
+                    >
+                      -
+                    </button>
+                    <div className="w-16 text-center">
+                      <span className="text-2xl font-mono text-cyan-300">{bettingTime}</span>
+                    </div>
+                    <button
+                      onClick={() => setBettingTime(Math.min(168, bettingTime + 1))}
+                      className="w-10 h-10 rounded-xl bg-white/10 text-neutral-300 hover:bg-white/20 transition-colors flex items-center justify-center"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+
+                {/* Generate / Start */}
+                {!codeGenerated ? (
+                  <button
+                    onClick={() => {
+                      setGroupCode(generateGroupCode());
+                      setCodeGenerated(true);
+                    }}
+                    className="w-full h-12 rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 transition-colors"
+                  >
+                    Generate Code
+                  </button>
+                ) : (
+                  <>
+                    <div className="bg-white/5 border border-white/10 rounded-xl py-4">
+                      <p className="text-sm text-neutral-400 mb-2">Your Group Code</p>
+                      <p className="text-2xl font-mono text-cyan-300">{groupCode}</p>
+                    </div>
+                    <button
+                      onClick={handleCreateGroup}
+                      disabled={creatingGroup}
+                      className="w-full h-12 rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 transition-colors disabled:opacity-50"
+                    >
+                      {creatingGroup ? "Creating..." : "Start!"}
+                    </button>
+                  </>
+                )}
                 <button
-                  onClick={handleJoinGroup}
-                  disabled={groupCode.length !== 6}
-                  className="flex-1 rounded-xl bg-cyan-400 text-black font-normal disabled:bg-white/10 disabled:text-neutral-400 disabled:cursor-not-allowed hover:bg-cyan-300 transition-colors"
+                  onClick={() => {
+                    setCreating(false);
+                    setCodeGenerated(false);
+                  }}
+                  className="w-full rounded-xl bg-white/5 text-neutral-400 font-normal hover:bg-white/10 transition-colors py-3"
                 >
-                  Join
+                  Back
                 </button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* INVITE MODAL (used after creating group) */}
-      {showInviteModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6 w-full max-w-sm">
-            <h2 className="text-xl font-normal text-neutral-200 mb-4">
-              Group Created!
-            </h2>
-            <p className="text-sm text-neutral-400 mb-6">
-              Share this code with your friends to let them join your group
-            </p>
-
-            <div className="space-y-4">
-              <div className="bg-white/10 rounded-xl p-4 text-center">
-                <div className="text-3xl font-mono tracking-widest text-cyan-300 mb-2">
-                  {groupCode}
-                </div>
-                <p className="text-xs text-neutral-500">Group Code</p>
-              </div>
-
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(groupCode);
-                  alert("Copied to clipboard!");
-                }}
-                className="w-full rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 transition-colors py-3"
-              >
-                Copy Code
-              </button>
-
-              <button
-                onClick={() => setShowInviteModal(false)}
-                className="w-full rounded-xl bg-white/10 text-neutral-200 font-normal hover:bg-white/20 transition-colors py-3"
-              >
-                Continue to Game
-              </button>
-            </div>
+            )}
           </div>
         </div>
       )}
