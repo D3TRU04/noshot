@@ -6,13 +6,14 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Logo from "@/components/Logo";
 import BackButton from "@/components/BackButton";
-import type { LinkedAccountWithMetadata } from "@privy-io/react-auth";
+
 export default function CreateGroup() {
   const [maxPlayers, setMaxPlayers] = useState(4);
   const [isInfinite, setIsInfinite] = useState(false);
   const [bettingTime, setBettingTime] = useState(24);
   const [groupCode, setGroupCode] = useState("");
-  const [showFloatingInvite, setShowFloatingInvite] = useState(false);
+  const [codeGenerated, setCodeGenerated] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const { user } = usePrivy();
   const router = useRouter();
@@ -24,33 +25,41 @@ export default function CreateGroup() {
     ).join("");
   };
 
+  const handleGenerateCode = () => {
+    const code = generateGroupCode();
+    setGroupCode(code);
+    setCodeGenerated(true);
+  };
+
   const handleStart = async () => {
     if (!user) {
       alert("You must be logged in to create a group.");
       return;
     }
 
-    const code = generateGroupCode();
-    setGroupCode(code);
+    // ✅ Get user's Solana wallet
+    const solanaWallet = user.linkedAccounts.find(
+      (acc) => acc.type === "wallet" && acc.chainType === "solana"
+    ) as { address?: string } | undefined;
 
-    const solanaWallet = user?.linkedAccounts.find(
-  (acc: LinkedAccountWithMetadata) =>
-    acc.type === "wallet" && acc.chainType === "solana"
-);
+    const creatorWallet = solanaWallet?.address;
+    if (!creatorWallet) {
+      alert("No Solana wallet found. Please reconnect.");
+      return;
+    }
 
-// TypeScript now knows this is a wallet
-const creatorWallet = solanaWallet && "address" in solanaWallet ? solanaWallet.address : null;
+    if (!groupCode) {
+      alert("Please generate a group code first.");
+      return;
+    }
 
-if (!creatorWallet) {
-  alert("No Solana wallet found. Please reconnect.");
-  return;
-}
+    setLoading(true);
 
-    // create group in Supabase
+    // ✅ Create group
     const { data: group, error } = await supabase
       .from("groups")
       .insert({
-        code,
+        code: groupCode,
         creator_wallet: creatorWallet,
         max_members: isInfinite ? null : maxPlayers,
         bet_duration_hours: bettingTime,
@@ -61,22 +70,26 @@ if (!creatorWallet) {
     if (error) {
       console.error(error);
       alert("Error creating group: " + error.message);
+      setLoading(false);
       return;
     }
 
-    // add creator as member
-    await supabase.from("group_members").insert({
+    // ✅ Add creator to group_members
+    const { error: memberError } = await supabase.from("group_members").insert({
       group_id: group.id,
       wallet_address: creatorWallet,
+      is_creator: true,
     });
 
-    // show floating invite popup
-    setShowFloatingInvite(true);
+    if (memberError) {
+      console.error(memberError);
+      alert("Error adding group member: " + memberError.message);
+      setLoading(false);
+      return;
+    }
 
-    // redirect to game page after a short delay
-    setTimeout(() => {
-      router.push(`/group/${group.id}`);
-    }, 1000); // 1 second delay to let them see the invite code briefly
+    setLoading(false);
+    router.push(`/group/${group.id}`);
   };
 
   return (
@@ -99,26 +112,31 @@ if (!creatorWallet) {
               <label className="block text-sm text-neutral-300 mb-3">
                 Maximum Players
               </label>
-              <input
-                type="number"
-                min="1"
-                max="100"
-                value={isInfinite ? "" : maxPlayers}
-                onChange={(e) => setMaxPlayers(parseInt(e.target.value) || 1)}
-                disabled={isInfinite}
-                className="w-24 mx-auto rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60 text-center"
-              />
-              <div className="flex items-center justify-center gap-2 mt-2">
+              <div className="flex flex-col items-center">
                 <input
-                  type="checkbox"
-                  id="infinite"
-                  checked={isInfinite}
-                  onChange={(e) => setIsInfinite(e.target.checked)}
-                  className="w-4 h-4 rounded border-white/20 bg-white/5 text-cyan-400 focus:ring-2 focus:ring-cyan-300/60"
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={isInfinite ? "" : maxPlayers}
+                  onChange={(e) => setMaxPlayers(parseInt(e.target.value) || 1)}
+                  disabled={isInfinite}
+                  className="w-24 rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60 text-center"
                 />
-                <label htmlFor="infinite" className="text-sm text-neutral-300 cursor-pointer">
-                  Infinite
-                </label>
+                <div className="flex items-center justify-center gap-2 mt-2">
+                  <input
+                    type="checkbox"
+                    id="infinite"
+                    checked={isInfinite}
+                    onChange={(e) => setIsInfinite(e.target.checked)}
+                    className="w-4 h-4 rounded border-white/20 bg-white/5 text-cyan-400 focus:ring-2 focus:ring-cyan-300/60"
+                  />
+                  <label
+                    htmlFor="infinite"
+                    className="text-sm text-neutral-300 cursor-pointer"
+                  >
+                    Infinite
+                  </label>
+                </div>
               </div>
             </div>
 
@@ -135,7 +153,9 @@ if (!creatorWallet) {
                   -
                 </button>
                 <div className="w-16 text-center">
-                  <span className="text-2xl font-mono text-cyan-300">{bettingTime}</span>
+                  <span className="text-2xl font-mono text-cyan-300">
+                    {bettingTime}
+                  </span>
                 </div>
                 <button
                   onClick={() => setBettingTime(Math.min(168, bettingTime + 1))}
@@ -146,29 +166,32 @@ if (!creatorWallet) {
               </div>
             </div>
 
-            {/* Action Button */}
-            <button
-              onClick={handleStart}
-              className="w-full h-12 rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 transition-colors"
-            >
-              Start!
-            </button>
+            {/* Generate / Start Buttons */}
+            {!codeGenerated ? (
+              <button
+                onClick={handleGenerateCode}
+                className="w-full h-12 rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 transition-colors"
+              >
+                Generate Code
+              </button>
+            ) : (
+              <>
+                <div className="bg-white/5 border border-white/10 rounded-xl py-4">
+                  <p className="text-sm text-neutral-400 mb-2">Your Group Code</p>
+                  <p className="text-2xl font-mono text-cyan-300">{groupCode}</p>
+                </div>
+                <button
+                  onClick={handleStart}
+                  disabled={loading}
+                  className="w-full h-12 rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 transition-colors disabled:opacity-50"
+                >
+                  {loading ? "Creating..." : "Start!"}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
-
-      {/* Floating Invite Code */}
-      {showFloatingInvite && (
-        <div className="fixed bottom-8 right-8 bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-4 text-center w-44 shadow-lg">
-          <div className="text-lg font-mono text-cyan-300 mb-2">{groupCode}</div>
-          <button
-            onClick={() => navigator.clipboard.writeText(groupCode)}
-            className="w-full rounded-xl bg-cyan-400 text-black text-sm py-1 hover:bg-cyan-300 transition-colors"
-          >
-            Copy Code
-          </button>
-        </div>
-      )}
     </div>
   );
 }
