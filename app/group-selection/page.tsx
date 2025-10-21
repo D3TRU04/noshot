@@ -34,6 +34,8 @@ export default function GroupSelection() {
   const [groupCode, setGroupCode] = useState("");
   const [codeGenerated, setCodeGenerated] = useState(false);
   const [creatingGroup, setCreatingGroup] = useState(false);
+  const [groupName, setGroupName] = useState("");
+  const [betDescription, setBetDescription] = useState("");
 
   // Fetch user's groups
   useEffect(() => {
@@ -133,7 +135,7 @@ export default function GroupSelection() {
 
     alert("Joined group!");
     setShowModal(false);
-    router.push(`/group/${group.id}`);
+    router.push(`/game/${group.id}`);
   };
 
   // Handle Create
@@ -163,9 +165,11 @@ export default function GroupSelection() {
       .from("groups")
       .insert({
         code: groupCode,
+        name: groupName || `Group ${groupCode}`,
         creator_wallet: creatorWallet,
         max_members: isInfinite ? null : maxPlayers,
         bet_duration_hours: bettingTime,
+        bet_description: betDescription,
       })
       .select()
       .single();
@@ -192,7 +196,7 @@ export default function GroupSelection() {
 
     setCreatingGroup(false);
     setShowModal(false);
-    router.push(`/group/${group.id}`);
+    router.push(`/game/${group.id}`);
   };
 
   return (
@@ -202,7 +206,7 @@ export default function GroupSelection() {
       <div className="w-full max-w-6xl">
         <div className="flex flex-col items-center mb-16">
           <Logo />
-          <h1 className="text-4xl font-semibold text-neutral-200 mt-6">Your Groups</h1>
+          <h1 className="text-4xl font-normal text-neutral-200 mt-6">Your Groups</h1>
           <p className="text-neutral-400 mt-2 text-sm">
             Manage your friend circles or start a new one
           </p>
@@ -215,7 +219,7 @@ export default function GroupSelection() {
             {groups.map((g) => (
               <div
                 key={g.id}
-                onClick={() => router.push(`/group/${g.id}`)}
+                onClick={() => router.push(`/game/${g.id}`)}
                 className="cursor-pointer rounded-2xl border border-white/10 bg-white/5 p-10 flex flex-col items-center justify-center hover:bg-white/10 transition-all backdrop-blur-md shadow-[0_10px_40px_-10px_rgba(0,0,0,0.4)] min-h-[220px]"
               >
                 <p className="font-mono text-cyan-300 text-3xl mb-3 tracking-widest">{g.code}</p>
@@ -231,7 +235,7 @@ export default function GroupSelection() {
             {/* Add new group card */}
             <div
               onClick={() => setShowModal(true)}
-              className="cursor-pointer rounded-2xl border border-white/10 bg-cyan-400/10 p-10 flex items-center justify-center text-7xl font-bold text-cyan-300 hover:bg-cyan-300/20 hover:text-cyan-200 transition-all backdrop-blur-md shadow-[0_10px_40px_-10px_rgba(0,0,0,0.4)] min-h-[220px]"
+              className="cursor-pointer rounded-2xl border border-white/10 bg-cyan-400/10 p-10 flex items-center justify-center text-7xl font-normal text-cyan-300 hover:bg-cyan-300/20 hover:text-cyan-200 transition-all backdrop-blur-md shadow-[0_10px_40px_-10px_rgba(0,0,0,0.4)] min-h-[220px]"
             >
               +
             </div>
@@ -249,19 +253,19 @@ export default function GroupSelection() {
                 <h2 className="text-2xl font-normal text-neutral-200 mb-6">Start or Join a Group</h2>
                 <button
                   onClick={() => setJoining(true)}
-                  className="w-full rounded-xl bg-cyan-400 text-black font-medium hover:bg-cyan-300 transition-colors py-3"
+                  className="w-full rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 transition-colors py-3"
                 >
                   Join Group
                 </button>
                 <button
                   onClick={() => setCreating(true)}
-                  className="w-full rounded-xl bg-white/10 text-neutral-200 font-medium hover:bg-white/20 transition-colors py-3"
+                  className="w-full rounded-xl bg-white/10 text-neutral-200 font-normal hover:bg-white/20 transition-colors py-3"
                 >
                   Create Group
                 </button>
                 <button
                   onClick={() => setShowModal(false)}
-                  className="w-full rounded-xl bg-white/5 text-neutral-400 font-medium hover:bg-white/10 transition-colors py-3"
+                  className="w-full rounded-xl bg-white/5 text-neutral-400 font-normal hover:bg-white/10 transition-colors py-3"
                 >
                   Cancel
                 </button>
@@ -305,6 +309,34 @@ export default function GroupSelection() {
             {creating && (
               <div className="w-full text-center space-y-6">
                 <h2 className="text-2xl font-normal text-neutral-200 mb-4">Create Group</h2>
+
+                {/* Group Name */}
+                <div>
+                  <label className="block text-sm text-neutral-300 mb-3">
+                    Group Name
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g., Friday Night Chaos"
+                    value={groupName}
+                    onChange={(e) => setGroupName(e.target.value)}
+                    className="w-full rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60 placeholder:text-neutral-500 text-center"
+                  />
+                </div>
+
+                {/* Bet Description */}
+                <div>
+                  <label className="block text-sm text-neutral-300 mb-3">
+                    Bet Description
+                  </label>
+                  <textarea
+                    placeholder="e.g., John is going to be first guy to be hammered tonight"
+                    value={betDescription}
+                    onChange={(e) => setBetDescription(e.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl bg-white/5 px-4 py-3 text-base outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60 placeholder:text-neutral-500 text-center resize-none"
+                  />
+                </div>
 
                 {/* Max Players */}
                 <div>

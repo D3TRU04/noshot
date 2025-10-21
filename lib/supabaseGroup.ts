@@ -47,10 +47,14 @@ export async function createGroup({
   creatorWallet,
   maxMembers,
   betDurationHours,
+  groupName,
+  betDescription,
 }: {
   creatorWallet: string;
   maxMembers?: number | null;
   betDurationHours: number;
+  groupName?: string;
+  betDescription?: string;
 }) {
   const code = Math.random().toString(36).substring(2, 8).toUpperCase(); // simple 6-char code
 
@@ -58,9 +62,11 @@ export async function createGroup({
     .from("groups")
     .insert({
       code,
+      name: groupName || `Group ${code}`,
       creator_wallet: creatorWallet,
       max_members: maxMembers ?? null,
       bet_duration_hours: betDurationHours,
+      bet_description: betDescription,
     })
     .select()
     .single();
