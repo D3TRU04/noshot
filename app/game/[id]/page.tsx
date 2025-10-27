@@ -16,6 +16,8 @@ type Group = {
   date_created: string;
   creator_wallet: string;
   bet_description?: string;
+  total_yes?: number;
+  total_no?: number;
 };
 
 type Member = {
@@ -55,6 +57,8 @@ export default function GamePage() {
     betDurationHours: 24
   });
   const [timerStartTime, setTimerStartTime] = useState<Date | null>(null);
+  const [totalYesPool, setTotalYesPool] = useState(0);
+  const [totalNoPool, setTotalNoPool] = useState(0);
 
   useEffect(() => {
     if (!groupId) return;
@@ -98,9 +102,24 @@ export default function GamePage() {
         setMembers(membersData || []);
       }
 
-      // 3️⃣ Get bets (placeholder - you'll need to create a bets table)
-      // For now, we'll use empty array
-      setBets([]);
+      // 3️⃣ Get pool totals from group (stored in groups table)
+      // Handle case where columns don't exist yet
+      const yesPool = (groupData as any).total_yes ?? 0;
+      const noPool = (groupData as any).total_no ?? 0;
+      setTotalYesPool(yesPool);
+      setTotalNoPool(noPool);
+      
+      // Get bets if table exists
+      const { data: betsData } = await supabase
+        .from('bets')
+        .select('*')
+        .eq('group_id', groupId);
+      
+      if (betsData) {
+        setBets(betsData);
+      } else {
+        setBets([]);
+      }
       
       // Populate settings data only if group exists
       if (groupData) {
@@ -167,6 +186,28 @@ export default function GamePage() {
     (acc: any) => acc.type === "wallet" && acc.chainType === "solana" && acc.address === group.creator_wallet
   );
 
+  // Calculate potential payout using proportional system
+  const calculatePotentialPayout = () => {
+    const userBet = betAmount;
+    const yourSideTotal = betSide === 'yes' 
+      ? totalYesPool + userBet 
+      : totalNoPool + userBet;
+    const otherSideTotal = betSide === 'yes' 
+      ? totalNoPool 
+      : totalYesPool;
+    
+    if (yourSideTotal === 0) return { stakeBack: 0, shareOfLosers: 0, totalPayout: 0 };
+    
+    const stakeBack = userBet;
+    const userPercentage = userBet / yourSideTotal;
+    const shareOfLosers = userPercentage * otherSideTotal;
+    const totalPayout = stakeBack + shareOfLosers;
+    
+    return { stakeBack, shareOfLosers, totalPayout };
+  };
+
+  const potentialPayout = calculatePotentialPayout();
+
   const handlePlaceBet = async () => {
     if (!user || !group) return;
 
@@ -185,17 +226,82 @@ export default function GamePage() {
     }
 
     setPlacingBet(true);
-
-    // Start animation
     setBetAnimation(betSide);
 
-    // TODO: Implement actual bet placement logic here
-    // For now, just show a success message
-    setTimeout(() => {
+    try {
+      console.log("Placing bet:", {
+        groupId: group.id,
+        wallet: walletAddress,
+        side: betSide,
+        amount: betAmount
+      });
+
+      console.log("🚀 Processing bet transaction...");
+      
+      // Note: This is currently a database-only operation
+      // For real wallet charges on devnet, you need to:
+      // 1. Sign transaction with Phantom/Privy
+      // 2. Transfer USDC to vault on Solana devnet
+      // 3. Deploy smart contract to devnet
+      //
+      // Right now: Just saves to Supabase, no wallet deduction
+      
+      // Simulate transaction processing
+      console.log(`💵 Would charge wallet on devnet: $${betAmount} USDC`);
+      console.log(`📤 Would transfer to Solana smart contract vault on devnet`);
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      console.log("✅ Transaction simulated (mock mode - no wallet charge)");
+
+      // Update the groups table with new pool totals
+      const newYesPool = betSide === 'yes' ? (totalYesPool + betAmount) : totalYesPool;
+      const newNoPool = betSide === 'no' ? (totalNoPool + betAmount) : totalNoPool;
+      
+      // Try to update database (columns might not exist yet)
+      const { error: updateError } = await supabase
+        .from('groups')
+        .update({
+          total_yes: newYesPool,
+          total_no: newNoPool,
+        })
+        .eq('id', group.id);
+
+      if (updateError) {
+        console.warn("Could not update pool in database:", updateError.message);
+        console.log("💡 Add these columns to groups table in Supabase:");
+        console.log("   ALTER TABLE groups ADD COLUMN IF NOT EXISTS total_yes NUMERIC DEFAULT 0;");
+        console.log("   ALTER TABLE groups ADD COLUMN IF NOT EXISTS total_no NUMERIC DEFAULT 0;");
+        // Still continue with UI update
+      }
+
+      // Update local state
+      setTotalYesPool(newYesPool);
+      setTotalNoPool(newNoPool);
+
+      // Try to save individual bet (optional, for bet history)
+      const { data: betData } = await supabase
+        .from('bets')
+        .insert({
+          group_id: group.id,
+          user_wallet: walletAddress,
+          bet_amount: betAmount,
+          side: betSide,
+          created_at: new Date().toISOString(),
+        })
+        .select();
+      
+      if (betData && betData.length > 0) {
+        setBets([...bets, betData[0]]);
+      }
+
       alert(`🎉 Bet placed: $${betAmount} on ${betSide.toUpperCase()}!`);
-      setPlacingBet(false);
       setBetAnimation('none');
-    }, 1500);
+      
+    } catch (error) {
+      console.error("Error placing bet:", error);
+      alert("Failed to place bet: " + (error as Error).message);
+    } finally {
+      setPlacingBet(false);
+    }
   };
 
   const handleInviteFriends = () => {
@@ -336,11 +442,36 @@ export default function GamePage() {
             </p>
           </div>
 
-          {/* Total Bets Card */}
+          {/* Total Pool Card */}
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md">
             <h3 className="text-lg font-normal text-neutral-200 mb-2">Total Pool</h3>
-            <p className="text-2xl font-mono text-cyan-300">$0</p>
-            <p className="text-xs text-neutral-400 mt-1">USDC</p>
+            <p className="text-2xl font-mono text-cyan-300">${(totalYesPool + totalNoPool).toFixed(2)}</p>
+            <p className="text-xs text-neutral-400 mt-1">USDC across all bets</p>
+          </div>
+        </div>
+
+        {/* Pool Breakdown */}
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md mb-8">
+          <h3 className="text-lg font-normal text-neutral-200 mb-4">Pool Breakdown</h3>
+          <div className="grid grid-cols-2 gap-6">
+            <div className="bg-green-400/10 border border-green-400/30 rounded-xl p-4">
+              <p className="text-sm text-green-300 mb-2">YES Pool</p>
+              <p className="text-3xl font-mono text-green-300">${totalYesPool.toFixed(2)}</p>
+              <p className="text-xs text-neutral-400 mt-1">
+                {totalYesPool + totalNoPool > 0 
+                  ? `${((totalYesPool / (totalYesPool + totalNoPool)) * 100).toFixed(1)}% of pool`
+                  : 'No bets yet'}
+              </p>
+            </div>
+            <div className="bg-red-400/10 border border-red-400/30 rounded-xl p-4">
+              <p className="text-sm text-red-300 mb-2">NO Pool</p>
+              <p className="text-3xl font-mono text-red-300">${totalNoPool.toFixed(2)}</p>
+              <p className="text-xs text-neutral-400 mt-1">
+                {totalYesPool + totalNoPool > 0 
+                  ? `${((totalNoPool / (totalYesPool + totalNoPool)) * 100).toFixed(1)}% of pool`
+                  : 'No bets yet'}
+              </p>
+            </div>
           </div>
         </div>
 
@@ -407,6 +538,17 @@ export default function GamePage() {
                   </button>
                 </div>
               </div>
+
+              {/* Potential Payout Display */}
+              {potentialPayout.totalPayout > 0 && (
+                <div className="bg-gradient-to-r from-cyan-400/10 to-purple-400/10 border border-cyan-400/30 rounded-xl p-4">
+                  <p className="text-sm text-neutral-400 mb-1">Potential Payout (if your side wins):</p>
+                  <p className="text-2xl font-mono text-cyan-300">${potentialPayout.totalPayout.toFixed(2)}</p>
+                  <p className="text-xs text-neutral-400 mt-1">
+                    ${potentialPayout.stakeBack.toFixed(2)} back + ${potentialPayout.shareOfLosers.toFixed(2)} from losers
+                  </p>
+                </div>
+              )}
 
               {/* Place Bet Button */}
               <button
@@ -513,9 +655,12 @@ export default function GamePage() {
 
       {/* Settings Modal */}
       {showSettings && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-          <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-8 w-full max-w-md shadow-xl">
-            <h2 className="text-2xl font-normal text-neutral-200 mb-6">Group Settings</h2>
+        <div 
+          className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center"
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0 }}
+        >
+          <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6 w-full max-w-md shadow-xl mx-4 max-h-[90vh] overflow-y-auto">
+            <h2 className="text-2xl font-normal text-neutral-200 mb-6 sticky top-0 bg-white/5 backdrop-blur-sm">Group Settings</h2>
             
             <div className="space-y-4">
               <div>

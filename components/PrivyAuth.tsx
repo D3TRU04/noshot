@@ -35,11 +35,11 @@ export function PrivyAuthProvider({
     loginMethods: ["wallet", "sms"],
 
     // 👇 Ensure users logging in with phone numbers get a Solana wallet
-   embeddedWallets: {
-            solana: {
-                createOnLogin: 'users-without-wallets',
-            },
-        },
+    embeddedWallets: {
+      solana: {
+        createOnLogin: 'users-without-wallets',
+      },
+    },
     externalWallets: {
       solana: {
         connectors: toSolanaWalletConnectors(),
@@ -133,4 +133,20 @@ export function useWalletConnected(): boolean {
   );
 
   return Boolean(authenticated && hasSolanaWallet);
+}
+
+/**
+ * useWalletAddress
+ * Returns the connected Solana wallet address
+ */
+export function useWalletAddress(): string | null {
+  const { user } = usePrivy();
+  
+  if (!user) return null;
+  
+  const solanaWallet = user.linkedAccounts.find(
+    (acc: any) => acc.type === "wallet" && acc.chainType === "solana"
+  ) as { address?: string } | undefined;
+  
+  return solanaWallet?.address ?? null;
 }

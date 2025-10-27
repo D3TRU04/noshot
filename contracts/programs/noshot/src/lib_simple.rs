@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("HKFogYYiQvaebd3vAjt2W7Qf595daXtza5YiHtXrszap");
+declare_id!("8HL3MB3Gdqcx2nWd6odgqeFjwKKP88X7pHq1xBcFLQ1m");
 
 #[program]
 pub mod noshot {
