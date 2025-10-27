@@ -12,6 +12,8 @@ type Group = {
   code: string;
   max_members: number | null;
   memberCount?: number;
+  created_at: string;
+  bet_duration_hours: number;
 };
 
 export default function GroupSelection() {
@@ -23,6 +25,7 @@ export default function GroupSelection() {
   const [showModal, setShowModal] = useState(false);
   const [joining, setJoining] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [activeTab, setActiveTab] = useState<"live" | "past">("live");
 
   // Join states
   const [groupCodeInput, setGroupCodeInput] = useState("");
@@ -42,41 +45,90 @@ export default function GroupSelection() {
     if (!user) return;
 
     const fetchGroups = async () => {
-      setLoading(true);
+      try {
+        setLoading(true);
 
-      const solanaWallet = user.linkedAccounts.find(
-        (acc: any) => acc.type === "wallet" && acc.chainType === "solana"
-      );
-      const walletAddress = (solanaWallet as { address?: string })?.address ?? null;
-      if (!walletAddress) return;
+        const solanaWallet = user.linkedAccounts.find(
+          (acc: any) => acc.type === "wallet" && acc.chainType === "solana"
+        );
+        const walletAddress = (solanaWallet as { address?: string })?.address ?? null;
+        
+        if (!walletAddress) {
+          console.log("No Solana wallet found");
+          setGroups([]);
+          setLoading(false);
+          return;
+        }
 
-      const { data: memberships, error } = await supabase
-        .from("group_members")
-        .select("group_id, groups(code, max_members)")
-        .eq("wallet_address", walletAddress);
+        console.log("Fetching groups for wallet:", walletAddress);
 
-      if (error) {
-        console.error(error);
-        setLoading(false);
-        return;
-      }
-
-      const fetchedGroups: Group[] = (memberships || []).map((m: any) => ({
-        id: m.group_id,
-        code: m.groups.code,
-        max_members: m.groups.max_members,
-      }));
-
-      for (let i = 0; i < fetchedGroups.length; i++) {
-        const { count } = await supabase
+        // First, get group memberships
+        const { data: memberships, error } = await supabase
           .from("group_members")
-          .select("*", { count: "exact", head: true })
-          .eq("group_id", fetchedGroups[i].id);
-        fetchedGroups[i].memberCount = count || 0;
-      }
+          .select("group_id")
+          .eq("wallet_address", walletAddress);
 
-      setGroups(fetchedGroups);
-      setLoading(false);
+        if (error) {
+          console.error("Error fetching memberships:", error);
+          setGroups([]);
+          setLoading(false);
+          return;
+        }
+
+        console.log("Memberships found:", memberships);
+
+        if (!memberships || memberships.length === 0) {
+          setGroups([]);
+          setLoading(false);
+          return;
+        }
+
+        // Get unique group IDs
+        const groupIds = Array.from(new Set(memberships.map((m: any) => m.group_id)));
+
+        console.log("Group IDs:", groupIds);
+
+        // Fetch group details
+        const { data: groupsData, error: groupsError } = await supabase
+          .from("groups")
+          .select("id, code, max_members, date_created, bet_duration_hours")
+          .in("id", groupIds);
+
+        if (groupsError) {
+          console.error("Error fetching groups details:", groupsError);
+          setGroups([]);
+          setLoading(false);
+          return;
+        }
+
+        console.log("Groups data:", groupsData);
+
+        // Filter and map groups safely
+        const fetchedGroups: Group[] = (groupsData || []).map((g: any) => ({
+          id: g.id,
+          code: g.code,
+          max_members: g.max_members,
+          created_at: g.date_created || new Date().toISOString(),
+          bet_duration_hours: g.bet_duration_hours || 24,
+        }));
+
+        for (let i = 0; i < fetchedGroups.length; i++) {
+          const { count } = await supabase
+            .from("group_members")
+            .select("*", { count: "exact", head: true })
+            .eq("group_id", fetchedGroups[i].id);
+          fetchedGroups[i].memberCount = count || 0;
+        }
+
+        console.log("Final fetched groups:", fetchedGroups);
+
+        setGroups(fetchedGroups);
+        setLoading(false);
+      } catch (err) {
+        console.error("Unexpected error fetching groups:", err);
+        setGroups([]);
+        setLoading(false);
+      }
     };
 
     fetchGroups();
@@ -89,6 +141,20 @@ export default function GroupSelection() {
       chars.charAt(Math.floor(Math.random() * chars.length))
     ).join("");
   };
+
+  // Check if group is live (within betting window)
+  const isGroupLive = (group: Group): boolean => {
+    const now = new Date();
+    const created = new Date(group.created_at);
+    const expiry = new Date(created.getTime() + group.bet_duration_hours * 60 * 60 * 1000);
+    return now < expiry;
+  };
+
+  // Filter groups based on active tab
+  const filteredGroups = groups.filter((group) => {
+    const isLive = isGroupLive(group);
+    return activeTab === "live" ? isLive : !isLive;
+  });
 
   // Handle Join
   const handleJoinGroup = async () => {
@@ -204,19 +270,57 @@ export default function GroupSelection() {
       <BackButton />
 
       <div className="w-full max-w-6xl">
-        <div className="flex flex-col items-center mb-16">
+        <div className="flex flex-col items-center mb-10">
           <Logo />
           <h1 className="text-4xl font-normal text-neutral-200 mt-6">Your Groups</h1>
-          <p className="text-neutral-400 mt-2 text-sm">
+          <p className="text-neutral-400 mt-2 text-sm mb-8">
             Manage your friend circles or start a new one
           </p>
+
+          {/* Tabs */}
+          <div className="flex gap-2 bg-white/5 p-1 rounded-xl border border-white/10">
+            <button
+              onClick={() => setActiveTab("live")}
+              className={`w-20 sm:w-24 px-6 py-2.5 rounded-lg font-normal transition-all text-center ${
+                activeTab === "live"
+                  ? "bg-cyan-400 text-black"
+                  : "text-neutral-400 hover:text-neutral-200"
+              }`}
+            >
+              Live
+            </button>
+            <button
+              onClick={() => setActiveTab("past")}
+              className={`w-20 sm:w-24 px-6 py-2.5 rounded-lg font-normal transition-all text-center ${
+                activeTab === "past"
+                  ? "bg-cyan-400 text-black"
+                  : "text-neutral-400 hover:text-neutral-200"
+              }`}
+            >
+              Past
+            </button>
+          </div>
         </div>
 
         {loading ? (
           <p className="text-neutral-400 text-center">Loading groups...</p>
+        ) : filteredGroups.length === 0 ? (
+          <div className="text-center py-20">
+            <p className="text-neutral-400 text-lg mb-4">
+              No {activeTab === "live" ? "live" : "past"} groups yet
+            </p>
+            {activeTab === "live" && (
+              <button
+                onClick={() => setShowModal(true)}
+                className="rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 transition-colors px-6 py-3"
+              >
+                Create Your First Group
+              </button>
+            )}
+          </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-10">
-            {groups.map((g) => (
+            {filteredGroups.map((g) => (
               <div
                 key={g.id}
                 onClick={() => router.push(`/game/${g.id}`)}
@@ -232,13 +336,15 @@ export default function GroupSelection() {
               </div>
             ))}
 
-            {/* Add new group card */}
-            <div
-              onClick={() => setShowModal(true)}
-              className="cursor-pointer rounded-2xl border border-white/10 bg-cyan-400/10 p-10 flex items-center justify-center text-7xl font-normal text-cyan-300 hover:bg-cyan-300/20 hover:text-cyan-200 transition-all backdrop-blur-md shadow-[0_10px_40px_-10px_rgba(0,0,0,0.4)] min-h-[220px]"
-            >
-              +
-            </div>
+            {/* Add new group card - only show on Live tab */}
+            {activeTab === "live" && (
+              <div
+                onClick={() => setShowModal(true)}
+                className="cursor-pointer rounded-2xl border border-white/10 bg-cyan-400/10 p-10 flex items-center justify-center text-7xl font-normal text-cyan-300 hover:bg-cyan-300/20 hover:text-cyan-200 transition-all backdrop-blur-md shadow-[0_10px_40px_-10px_rgba(0,0,0,0.4)] min-h-[220px]"
+              >
+                +
+              </div>
+            )}
           </div>
         )}
       </div>

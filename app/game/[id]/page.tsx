@@ -13,7 +13,7 @@ type Group = {
   name?: string;
   max_members: number | null;
   bet_duration_hours: number;
-  created_at: string;
+  date_created: string;
   creator_wallet: string;
   bet_description?: string;
 };
@@ -78,7 +78,7 @@ export default function GamePage() {
 
       console.log("Group data:", {
         id: groupData.id,
-        created_at: groupData.created_at,
+        date_created: groupData.date_created,
         bet_duration_hours: groupData.bet_duration_hours,
         name: groupData.name
       });
@@ -129,8 +129,8 @@ export default function GamePage() {
       try {
         const now = new Date();
         
-        // Use timer start time if available (for updated durations), otherwise use created_at
-        const startTime = timerStartTime || new Date(group.created_at);
+        // Use timer start time if available (for updated durations), otherwise use date_created
+        const startTime = timerStartTime || new Date(group.date_created);
         
         // Check if start time is valid
         if (isNaN(startTime.getTime())) {
