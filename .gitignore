@@ -33,3 +33,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Solana/Anchor build artifacts
+contracts/target/
+contracts/node_modules/
+contracts/.anchor/
+contracts/yarn.lock
+contracts/.yarn/
+contracts/.pnp.*
+contracts/Dockerfile.localnet

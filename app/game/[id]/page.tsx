@@ -103,12 +103,12 @@ export default function GamePage() {
       setBets([]);
       
       // Populate settings data only if group exists
-      if (group) {
+      if (groupData) {
         setSettingsData({
-          name: group.name || '',
-          betDescription: group.bet_description || '',
-          maxMembers: group.max_members?.toString() || '',
-          betDurationHours: group.bet_duration_hours || 24
+          name: groupData.name || '',
+          betDescription: groupData.bet_description || '',
+          maxMembers: groupData.max_members?.toString() || '',
+          betDurationHours: groupData.bet_duration_hours || 24
         });
       }
 
@@ -296,9 +296,9 @@ export default function GamePage() {
 
       <div className="w-full max-w-4xl">
         {/* Game Header */}
-        <div className="mb-8">
+        <div className="mb-8 text-center">
           <Logo />
-          <div className="mt-6 text-center">
+          <div className="mt-10 text-center">
             <div className="flex items-center justify-center gap-4 mb-2">
               <h1 className="text-3xl font-normal text-neutral-200">
                 {group.name || `Group ${group.code}`}
@@ -491,7 +491,7 @@ export default function GamePage() {
         </div>
 
         {/* Invite Section */}
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md mb-12">
           <h3 className="text-lg font-normal text-neutral-200 mb-4">Invite Friends</h3>
           <div className="flex items-center gap-4">
             <div className="flex-1 rounded-xl bg-white/5 px-4 py-3">

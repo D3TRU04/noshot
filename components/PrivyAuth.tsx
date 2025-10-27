@@ -93,7 +93,7 @@ export function WalletButton(): JSX.Element {
     const address = solanaWallet?.address;
 
     return (
-      <div className="flex items-center gap-3">
+      <div className="flex flex-col items-center gap-3">
         {address ? (
           <span className="text-sm text-neutral-300">
             {address.slice(0, 6)}...{address.slice(-4)}
@@ -104,7 +104,7 @@ export function WalletButton(): JSX.Element {
 
         <button
           onClick={logout}
-          className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/20 transition"
+          className="rounded-xl bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700 transition"
         >
           Disconnect
         </button>
