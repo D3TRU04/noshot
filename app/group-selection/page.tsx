@@ -54,13 +54,13 @@ export default function GroupSelection() {
         const walletAddress = (solanaWallet as { address?: string })?.address ?? null;
         
         if (!walletAddress) {
-          console.log("No Solana wallet found");
+          
           setGroups([]);
           setLoading(false);
           return;
         }
 
-        console.log("Fetching groups for wallet:", walletAddress);
+        
 
         // First, get group memberships
         const { data: memberships, error } = await supabase
@@ -69,13 +69,13 @@ export default function GroupSelection() {
           .eq("wallet_address", walletAddress);
 
         if (error) {
-          console.error("Error fetching memberships:", error);
+          
           setGroups([]);
           setLoading(false);
           return;
         }
 
-        console.log("Memberships found:", memberships);
+        
 
         if (!memberships || memberships.length === 0) {
           setGroups([]);
@@ -86,7 +86,7 @@ export default function GroupSelection() {
         // Get unique group IDs
         const groupIds = Array.from(new Set(memberships.map((m: any) => m.group_id)));
 
-        console.log("Group IDs:", groupIds);
+        
 
         // Fetch group details
         const { data: groupsData, error: groupsError } = await supabase
@@ -95,13 +95,13 @@ export default function GroupSelection() {
           .in("id", groupIds);
 
         if (groupsError) {
-          console.error("Error fetching groups details:", groupsError);
+          
           setGroups([]);
           setLoading(false);
           return;
         }
 
-        console.log("Groups data:", groupsData);
+        
 
         // Filter and map groups safely
         const fetchedGroups: Group[] = (groupsData || []).map((g: any) => ({
@@ -120,12 +120,12 @@ export default function GroupSelection() {
           fetchedGroups[i].memberCount = count || 0;
         }
 
-        console.log("Final fetched groups:", fetchedGroups);
+        
 
         setGroups(fetchedGroups);
         setLoading(false);
       } catch (err) {
-        console.error("Unexpected error fetching groups:", err);
+        
         setGroups([]);
         setLoading(false);
       }
@@ -241,7 +241,7 @@ export default function GroupSelection() {
       .single();
 
     if (error) {
-      console.error(error);
+      
       alert("Error creating group: " + error.message);
       setCreatingGroup(false);
       return;
@@ -254,7 +254,7 @@ export default function GroupSelection() {
     });
 
     if (memberError) {
-      console.error(memberError);
+      
       alert("Error adding group member: " + memberError.message);
       setCreatingGroup(false);
       return;

@@ -77,7 +77,7 @@ export function WalletButton(): JSX.Element {
           walletAddress: solanaWallet.address,
           phoneNumber: (phone as any)?.phoneNumber,
         }).then((profile) => {
-          console.log("✅ Synced profile to Supabase:", profile);
+          
         });
       }
     }

@@ -20,7 +20,7 @@ export async function placeRealBet({
   groupId: string;
   amount: number; // treated as SOL for testnet flow
   side: 'yes' | 'no';
-  signTransaction: (tx: Transaction) => Promise<Transaction>; // Privy wallet signer
+  signTransaction: (tx: Transaction) => Promise<Transaction>; // wallet signer
   toAddress?: string; // optional override for destination
 }) {
   const rpcUrl = DEFAULT_RPC;
@@ -33,42 +33,73 @@ export async function placeRealBet({
   const toPubkey = new PublicKey(destination);
 
   if (fromPubkey.equals(toPubkey)) {
-    console.warn('Sender and treasury are the same address; proceeding. Net effect will be only fees.', {
-      sender: fromPubkey.toBase58(),
-      treasury: toPubkey.toBase58(),
-    });
+    
   }
 
   // Convert amount SOL -> lamports; ensure positive non-zero
   const lamports = Math.max(1, Math.floor(amount * LAMPORTS_PER_SOL));
 
-  console.log('🚀 Sending real SOL transfer on RPC:', rpcUrl);
-  console.log('📝 Transfer details:', { from: fromPubkey.toBase58(), to: toPubkey.toBase58(), lamports, groupId, side });
+  
 
   try {
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
-
-    const tx = new Transaction({ feePayer: fromPubkey, recentBlockhash: blockhash }).add(
-      SystemProgram.transfer({ fromPubkey, toPubkey, lamports })
-    );
-
-    // Request user signature via provided signer
-    const signed = await signTransaction(tx);
-
-    const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
-    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-
-    console.log('✅ Confirmed SOL transfer on cluster:', rpcUrl, 'signature:', sig);
-    return { success: true, tx: sig };
-  } catch (error: any) {
-    const enriched = new Error(
-      `Transfer failed: ${error?.message || error}. Check treasury and wallet network.`
-    );
-    // Attach logs if present
-    if (error && typeof error === 'object') {
-      (enriched as any).logs = (error as any).logs;
+    // Basic balance check to avoid common simulation failure
+    const currentBalance = await connection.getBalance(fromPubkey, 'processed');
+    if (currentBalance <= 0) {
+      throw new Error(`Sender has 0 SOL on this cluster (${rpcUrl}). Fund the wallet on testnet.`);
     }
-    console.error('❌ Error placing bet (SOL transfer):', error?.message || error, (error as any)?.logs || []);
+    if (currentBalance < lamports) {
+      throw new Error(`Insufficient SOL: balance=${(currentBalance / LAMPORTS_PER_SOL).toFixed(6)} < amount=${(lamports / LAMPORTS_PER_SOL).toFixed(6)}.`);
+    }
+
+    const trySend = async (): Promise<string> => {
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+      const tx = new Transaction({ feePayer: fromPubkey, recentBlockhash: blockhash }).add(
+        SystemProgram.transfer({ fromPubkey, toPubkey, lamports })
+      );
+
+      // Prefer signAndSendTransaction if wallet supports it (Phantom modern API)
+      const anyGlobal: any = globalThis as any;
+      const maybeProvider = anyGlobal?.solana;
+      if (maybeProvider?.signAndSendTransaction) {
+        const resp = await maybeProvider.signAndSendTransaction(tx);
+        const sig: string = resp?.signature || resp; // some providers return { signature }
+        await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+        return sig;
+      }
+
+      // Fallback: sign locally and send raw
+      const signed = await signTransaction(tx);
+      const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+      await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+      return sig;
+    };
+
+    try {
+      const sig = await trySend();
+      
+      return { success: true, tx: sig };
+    } catch (e: any) {
+      // Retry once if blockhash or timing issues
+      const message = String(e?.message || e);
+      if (/blockhash/i.test(message) || /expired/i.test(message) || /not found/i.test(message)) {
+        
+        const sig = await trySend();
+        
+        return { success: true, tx: sig };
+      }
+      throw e;
+    }
+  } catch (error: any) {
+    let logs: any = undefined;
+    try {
+      if (error?.getLogs && typeof error.getLogs === 'function') {
+        logs = await error.getLogs(connection);
+      }
+    } catch {}
+    const msg = `Transfer failed: ${error?.message || error}.`;
+    
+    const enriched = new Error(`${msg}${logs ? ' Logs captured in console.' : ''}`);
+    (enriched as any).logs = logs;
     throw enriched;
   }
 }
@@ -107,7 +138,7 @@ export async function distributePayouts({
   const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
   await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
 
-  console.log('✅ Payout transaction confirmed:', sig);
+  
   return sig;
 }
 
@@ -123,7 +154,7 @@ export async function claimRealWinnings({
   groupId: string;
   signTransaction: any;
 }) {
-  console.log('💰 Claiming REAL winnings from Solana vault on devnet...');
+  
   
   // TODO: Implement actual claim on devnet
   // const program = await getProgram();
@@ -147,7 +178,7 @@ export async function resolveRealBet({
   winningSide: 'yes' | 'no';
   creatorWallet: string;
 }) {
-  console.log(`🎯 Resolving bet on Solana devnet with winning side: ${winningSide}`);
+  
   
   // TODO: Implement actual resolve on devnet
   // const tx = await program.methods

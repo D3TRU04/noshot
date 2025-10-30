@@ -16,7 +16,7 @@ export async function fetchSolBalance(walletAddress: string, cluster: 'mainnet-b
     // Convert lamports to SOL
     return balance / LAMPORTS_PER_SOL;
   } catch (error) {
-    console.error('Error fetching balance:', error);
+    
     return 0;
   }
 }
@@ -40,7 +40,7 @@ export async function checkWalletNetwork(): Promise<'mainnet' | 'devnet' | 'unkn
     
     return 'unknown';
   } catch (error) {
-    console.error('Error checking wallet network:', error);
+    
     return 'unknown';
   }
 }
@@ -51,7 +51,7 @@ export async function checkWalletNetwork(): Promise<'mainnet' | 'devnet' | 'unkn
 export async function fetchUsdcBalance(walletAddress: string, cluster: 'mainnet-beta' | 'devnet' = 'mainnet-beta'): Promise<number> {
   // USDC on Solana requires SPL token account lookup
   // For now, just return 0
-  console.log('USDC balance fetching not yet implemented - requires SPL token integration');
+  
   return 0;
 }
 

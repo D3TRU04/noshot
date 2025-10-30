@@ -63,7 +63,7 @@ export default function GroupPage() {
         .order("joined_at", { ascending: true });
 
       if (membersError) {
-        console.error(membersError);
+        
       } else {
         setMembers(membersData || []);
       }

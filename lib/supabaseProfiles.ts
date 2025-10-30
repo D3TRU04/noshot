@@ -20,7 +20,7 @@ export async function upsertUserProfile({
      
 
   if (error) {
-    console.error("Supabase profile error:", error.message);
+    
     throw error;
   }
 

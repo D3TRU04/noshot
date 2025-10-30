@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { placeRealBet, distributePayouts } from "@/lib/solanaClient";
+import { fetchSolPerUsdcFromHelius } from "@/lib/utils";
 import Logo from "@/components/Logo";
 import BackButton from "@/components/BackButton";
 import { usePrivy } from "@privy-io/react-auth";
@@ -61,6 +62,12 @@ export default function GamePage() {
   const [timerStartTime, setTimerStartTime] = useState<Date | null>(null);
   const [totalYesPool, setTotalYesPool] = useState(0);
   const [totalNoPool, setTotalNoPool] = useState(0);
+  const [modal, setModal] = useState<{ open: boolean; title: string; body: React.ReactNode }>(
+    { open: false, title: '', body: '' }
+  );
+  const openModal = (title: string, body: React.ReactNode) => setModal({ open: true, title, body });
+  const closeModal = () => setModal({ open: false, title: '', body: '' });
+  const [solPerUsdc, setSolPerUsdc] = useState<number | null>(null);
 
   useEffect(() => {
     if (!groupId) return;
@@ -76,13 +83,13 @@ export default function GamePage() {
         .single();
 
       if (groupError || !groupData) {
-        console.error("Group fetch error:", groupError);
+        
         alert("Group not found.");
         router.push("/group-selection");
         return;
       }
 
-      console.log("Group data:", {
+      ({
         id: groupData.id,
         date_created: groupData.date_created,
         bet_duration_hours: groupData.bet_duration_hours,
@@ -99,7 +106,7 @@ export default function GamePage() {
         .order("joined_at", { ascending: true });
 
       if (membersError) {
-        console.error(membersError);
+        
       } else {
         setMembers(membersData || []);
       }
@@ -139,6 +146,14 @@ export default function GamePage() {
     fetchGroup();
   }, [groupId, router]);
 
+  // Fetch conversion from Helius only (no fallback)
+  useEffect(() => {
+    (async () => {
+      const heliusRate = await fetchSolPerUsdcFromHelius();
+      setSolPerUsdc(heliusRate && isFinite(heliusRate) && heliusRate > 0 ? heliusRate : null);
+    })();
+  }, []);
+
   // Calculate time remaining
   useEffect(() => {
     if (!group || !group.bet_duration_hours) {
@@ -173,7 +188,7 @@ export default function GamePage() {
 
         setTimeRemaining(`${hours}h ${minutes}m ${seconds}s`);
       } catch (error) {
-        console.error('Timer calculation error:', error);
+        
         setTimeRemaining("Error calculating time");
       }
     };
@@ -231,38 +246,70 @@ export default function GamePage() {
     setBetAnimation(betSide);
 
     try {
-      console.log("Placing bet:", {
+      ({
         groupId: group.id,
         wallet: walletAddress,
         side: betSide,
         amount: betAmount
       });
 
-      console.log("🚀 Processing bet transaction...");
+      
 
       // Real SOL transfer on selected cluster (uses NEXT_PUBLIC_SOLANA_RPC_URL)
       const provider = (globalThis as any).solana;
-      if (!provider?.isPhantom || !provider?.publicKey) {
+      if (!provider?.isPhantom) {
         throw new Error('Phantom wallet not found. Please install/open Phantom and connect.');
+      }
+      // Ensure connected; trigger connect if needed
+      try {
+        if (!provider?.publicKey) {
+          await provider.connect();
+        }
+      } catch (e) {
+        throw new Error('Phantom connect was rejected. Please approve the connection and try again.');
+      }
+      if (!provider?.publicKey) {
+        throw new Error('Phantom did not provide a public key after connecting.');
       }
       const providerAddress = provider.publicKey.toBase58();
       if (providerAddress !== walletAddress) {
-        console.warn('Connected Privy wallet differs from Phantom signer. Using Phantom as sender.', { providerAddress, walletAddress });
+        
       }
 
       const signTransaction = async (tx: any) => {
         return await provider.signTransaction(tx);
       };
 
+      // Convert entered USDC to SOL using env rate
+      if (!solPerUsdc || !isFinite(solPerUsdc) || solPerUsdc <= 0) {
+        openModal('Price unavailable', (
+          <div className="space-y-2">
+            <p className="text-neutral-300">Couldn’t fetch SOL price from Helius. Ensure NEXT_PUBLIC_HELIUS_API_KEY is set and try again.</p>
+            <p className="text-neutral-400 text-xs">We don’t use a fallback rate.</p>
+          </div>
+        ));
+        setPlacingBet(false);
+        setBetAnimation('none');
+        return;
+      }
+      const solAmount = betAmount * solPerUsdc;
+
       const { tx } = await placeRealBet({
         walletAddress: providerAddress,
         groupId: group.id,
-        amount: betAmount, // interpreted as SOL in current flow
+        amount: solAmount, // send SOL converted from entered USDC
         side: betSide,
         signTransaction,
         toAddress: group.treasury_wallet || process.env.NEXT_PUBLIC_TREASURY,
       });
-      console.log("✅ On-chain transfer signature:", tx);
+      
+      const explorer = `https://explorer.solana.com/tx/${tx}?cluster=testnet`;
+      openModal('Bet submitted', (
+        <div className="space-y-2">
+          <p className="text-neutral-300">Your transaction was sent successfully.</p>
+          <a href={explorer} target="_blank" rel="noreferrer" className="text-cyan-300 underline">View on Solana Explorer</a>
+        </div>
+      ));
 
       // Update the groups table with new pool totals
       const newYesPool = betSide === 'yes' ? (totalYesPool + betAmount) : totalYesPool;
@@ -278,10 +325,7 @@ export default function GamePage() {
         .eq('id', group.id);
 
       if (updateError) {
-        console.warn("Could not update pool in database:", updateError.message);
-        console.log("💡 Add these columns to groups table in Supabase:");
-        console.log("   ALTER TABLE groups ADD COLUMN IF NOT EXISTS total_yes NUMERIC DEFAULT 0;");
-        console.log("   ALTER TABLE groups ADD COLUMN IF NOT EXISTS total_no NUMERIC DEFAULT 0;");
+        
         // Still continue with UI update
       }
 
@@ -305,12 +349,15 @@ export default function GamePage() {
         setBets([...bets, betData[0]]);
       }
 
-      alert(`🎉 Bet placed: $${betAmount} on ${betSide.toUpperCase()}!`);
       setBetAnimation('none');
       
     } catch (error) {
-      console.error("Error placing bet:", error);
-      alert("Failed to place bet: " + (error as Error).message);
+      openModal('Transaction failed', (
+        <div className="space-y-2">
+          <p className="text-neutral-300">{(error as Error).message}</p>
+          <p className="text-neutral-400 text-xs">Please verify Testnet, balance, and try again.</p>
+        </div>
+      ));
     } finally {
       setPlacingBet(false);
     }
@@ -363,10 +410,16 @@ export default function GamePage() {
         transfers,
         signTransaction: async (tx: any) => provider.signTransaction(tx),
       });
-      console.log('✅ Payouts sent, signature:', sig);
-      alert('Payouts sent. Tx: ' + sig);
+      
+      const explorer = `https://explorer.solana.com/tx/${sig}?cluster=testnet`;
+      openModal('Payouts sent', (
+        <div className="space-y-2">
+          <p className="text-neutral-300">Funds have been distributed to winners.</p>
+          <a href={explorer} target="_blank" rel="noreferrer" className="text-cyan-300 underline">View on Solana Explorer</a>
+        </div>
+      ));
     } catch (err) {
-      console.error('Error resolving and paying:', err);
+      
       alert('Error resolving and paying: ' + (err as Error).message);
     }
   };
@@ -393,7 +446,7 @@ export default function GamePage() {
         .eq('id', group.id);
 
       if (error) {
-        console.error('Error updating group:', error);
+        
         alert('Error updating group settings: ' + error.message);
         return;
       }
@@ -413,7 +466,7 @@ export default function GamePage() {
       // If duration changed, reset timer to current time
       if (durationChanged) {
         setTimerStartTime(new Date());
-        console.log('Timer reset due to duration change:', {
+        ({
           oldDuration: group.bet_duration_hours,
           newDuration: settingsData.betDurationHours,
           newStartTime: new Date()
@@ -423,7 +476,7 @@ export default function GamePage() {
       alert('Group settings updated successfully!');
       setShowSettings(false);
     } catch (err) {
-      console.error('Unexpected error:', err);
+      
       alert('Unexpected error updating settings');
     }
   };
@@ -512,8 +565,8 @@ export default function GamePage() {
           {/* Total Pool Card */}
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md">
             <h3 className="text-lg font-normal text-neutral-200 mb-2">Total Pool</h3>
-            <p className="text-2xl font-mono text-cyan-300">{(totalYesPool + totalNoPool).toFixed(2)} SOL</p>
-            <p className="text-xs text-neutral-400 mt-1">SOL across all bets</p>
+            <p className="text-2xl font-mono text-cyan-300">${(totalYesPool + totalNoPool).toFixed(2)}</p>
+            <p className="text-xs text-neutral-400 mt-1">USDC across all bets</p>
           </div>
         </div>
 
@@ -523,7 +576,7 @@ export default function GamePage() {
           <div className="grid grid-cols-2 gap-6">
             <div className="bg-green-400/10 border border-green-400/30 rounded-xl p-4">
               <p className="text-sm text-green-300 mb-2">YES Pool</p>
-              <p className="text-3xl font-mono text-green-300">{totalYesPool.toFixed(2)} SOL</p>
+              <p className="text-3xl font-mono text-green-300">${totalYesPool.toFixed(2)}</p>
               <p className="text-xs text-neutral-400 mt-1">
                 {totalYesPool + totalNoPool > 0 
                   ? `${((totalYesPool / (totalYesPool + totalNoPool)) * 100).toFixed(1)}% of pool`
@@ -532,7 +585,7 @@ export default function GamePage() {
             </div>
             <div className="bg-red-400/10 border border-red-400/30 rounded-xl p-4">
               <p className="text-sm text-red-300 mb-2">NO Pool</p>
-              <p className="text-3xl font-mono text-red-300">{totalNoPool.toFixed(2)} SOL</p>
+              <p className="text-3xl font-mono text-red-300">${totalNoPool.toFixed(2)}</p>
               <p className="text-xs text-neutral-400 mt-1">
                 {totalYesPool + totalNoPool > 0 
                   ? `${((totalNoPool / (totalYesPool + totalNoPool)) * 100).toFixed(1)}% of pool`
@@ -564,7 +617,7 @@ export default function GamePage() {
             <div className="space-y-4">
               {/* Bet Amount */}
               <div>
-                <label className="block text-sm text-neutral-300 mb-2">Bet Amount (SOL)</label>
+                <label className="block text-sm text-neutral-300 mb-2">Bet Amount (USDC)</label>
                 <input
                   type="number"
                   min="0.1"
@@ -610,9 +663,9 @@ export default function GamePage() {
               {potentialPayout.totalPayout > 0 && (
                 <div className="bg-gradient-to-r from-cyan-400/10 to-purple-400/10 border border-cyan-400/30 rounded-xl p-4">
                   <p className="text-sm text-neutral-400 mb-1">Potential Payout (if your side wins):</p>
-                  <p className="text-2xl font-mono text-cyan-300">{potentialPayout.totalPayout.toFixed(2)} SOL</p>
+                  <p className="text-2xl font-mono text-cyan-300">${potentialPayout.totalPayout.toFixed(2)}</p>
                   <p className="text-xs text-neutral-400 mt-1">
-                    {potentialPayout.stakeBack.toFixed(2)} SOL back + {potentialPayout.shareOfLosers.toFixed(2)} SOL from losers
+                    ${potentialPayout.stakeBack.toFixed(2)} back + ${potentialPayout.shareOfLosers.toFixed(2)} from losers
                   </p>
                 </div>
               )}
@@ -629,7 +682,7 @@ export default function GamePage() {
                     : 'bg-cyan-400 text-black hover:bg-cyan-300'
                 } disabled:bg-white/10 disabled:text-neutral-400 disabled:cursor-not-allowed`}
               >
-                {placingBet ? "🎯 Placing Bet..." : betAnimation !== 'none' ? "🎉 Bet Placed!" : `Place ${betAmount} SOL Bet on ${betSide.toUpperCase()}`}
+                {placingBet ? "🎯 Placing Bet..." : betAnimation !== 'none' ? "🎉 Bet Placed!" : `Place $${betAmount} Bet on ${betSide.toUpperCase()}`}
               </button>
             </div>
           </div>
@@ -655,7 +708,7 @@ export default function GamePage() {
                         {bet.user_wallet.slice(0, 8)}...{bet.user_wallet.slice(-4)}
                       </p>
                       <p className="text-xs text-neutral-500">
-                        {bet.bet_amount} SOL
+                        ${bet.bet_amount} USDC
                       </p>
                     </div>
                   </div>
@@ -668,25 +721,7 @@ export default function GamePage() {
           )}
         </div>
 
-        {/* Resolve & Pay (treasury only) */}
-        <div className="rounded-2xl border border-yellow-400/30 bg-yellow-400/10 p-6 backdrop-blur-md mb-8">
-          <h3 className="text-lg font-normal text-yellow-300 mb-4">Admin: Resolve & Pay</h3>
-          <p className="text-xs text-yellow-200 mb-3">Switch Phantom to the treasury wallet to send payouts.</p>
-          <div className="flex gap-3">
-            <button
-              onClick={() => handleResolveAndPay('yes')}
-              className="rounded-xl bg-green-500/80 text-black px-4 py-2 hover:bg-green-400"
-            >
-              Resolve YES & Pay
-            </button>
-            <button
-              onClick={() => handleResolveAndPay('no')}
-              className="rounded-xl bg-red-500/80 text-black px-4 py-2 hover:bg-red-400"
-            >
-              Resolve NO & Pay
-            </button>
-          </div>
-        </div>
+        
 
         {/* Players List */}
         <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md mb-8">
@@ -739,6 +774,27 @@ export default function GamePage() {
           </p>
         </div>
       </div>
+
+      {/* Success Modal */}
+      {modal.open && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0 }}
+        >
+          <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6 w-full max-w-md shadow-xl mx-4">
+            <h3 className="text-xl font-normal text-neutral-200 mb-3">{modal.title}</h3>
+            <div className="text-sm">{modal.body}</div>
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={closeModal}
+                className="rounded-xl bg-cyan-400 text-black px-4 py-2 hover:bg-cyan-300"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Settings Modal */}
       {showSettings && (

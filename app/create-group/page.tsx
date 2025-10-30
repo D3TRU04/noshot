@@ -68,7 +68,7 @@ export default function CreateGroup() {
       .single();
 
     if (error) {
-      console.error(error);
+      
       alert("Error creating group: " + error.message);
       setLoading(false);
       return;
@@ -82,7 +82,7 @@ export default function CreateGroup() {
     });
 
     if (memberError) {
-      console.error(memberError);
+      
       alert("Error adding group member: " + memberError.message);
       setLoading(false);
       return;

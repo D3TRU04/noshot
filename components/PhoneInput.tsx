@@ -33,8 +33,7 @@ export default function PhoneInput({
     if (!phone.trim()) return;
     
     // TESTING MODE: Bypass OTP sending
-    console.log(`[TEST MODE] Simulating OTP sent to ${phone}`);
-    console.log("Note: OTP verification bypassed for testing. Use any 6-digit code.");
+    
     setIsOtpSent(true);
     setCountdown(5); // Short countdown for testing
   };
@@ -43,14 +42,13 @@ export default function PhoneInput({
     if (!otp.trim()) return;
     
     // TESTING MODE: Accept any 6-digit code
-    console.log(`[TEST MODE] Verifying OTP: ${otp} for phone: ${phone}`);
-    console.log("Note: OTP verification bypassed for testing.");
+    
     
     // For testing purposes, accept any 6-digit code
     if (otp.length === 6) {
       setIsVerified(true);
       onVerified?.(phone);
-      console.log(`[TEST MODE] Phone ${phone} verified successfully!`);
+      
     } else {
       alert("Please enter a 6-digit code for testing.");
     }
