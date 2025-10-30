@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { placeRealBet, distributePayouts } from "@/lib/solanaClient";
-import { fetchSolPerUsdcFromHelius } from "@/lib/utils";
 import Logo from "@/components/Logo";
 import BackButton from "@/components/BackButton";
 import { usePrivy } from "@privy-io/react-auth";
@@ -67,7 +66,8 @@ export default function GamePage() {
   );
   const openModal = (title: string, body: React.ReactNode) => setModal({ open: true, title, body });
   const closeModal = () => setModal({ open: false, title: '', body: '' });
-  const [solPerUsdc, setSolPerUsdc] = useState<number | null>(null);
+  const [autoPayoutDone, setAutoPayoutDone] = useState(false);
+  const [forceBettingClosed, setForceBettingClosed] = useState(false);
 
   useEffect(() => {
     if (!groupId) return;
@@ -146,13 +146,7 @@ export default function GamePage() {
     fetchGroup();
   }, [groupId, router]);
 
-  // Fetch conversion from Helius only (no fallback)
-  useEffect(() => {
-    (async () => {
-      const heliusRate = await fetchSolPerUsdcFromHelius();
-      setSolPerUsdc(heliusRate && isFinite(heliusRate) && heliusRate > 0 ? heliusRate : null);
-    })();
-  }, []);
+  
 
   // Calculate time remaining
   useEffect(() => {
@@ -177,7 +171,7 @@ export default function GamePage() {
         const endTime = new Date(startTime.getTime() + group.bet_duration_hours * 60 * 60 * 1000);
         const diff = endTime.getTime() - now.getTime();
         
-        if (diff <= 0) {
+        if (diff <= 0 || forceBettingClosed) {
           setTimeRemaining("Betting closed");
           return;
         }
@@ -197,7 +191,7 @@ export default function GamePage() {
     const interval = setInterval(updateTimer, 1000);
 
     return () => clearInterval(interval);
-  }, [group, timerStartTime]);
+  }, [group, timerStartTime, forceBettingClosed]);
 
   const isCreator = user && group && user.linkedAccounts?.find(
     (acc: any) => acc.type === "wallet" && acc.chainType === "solana" && acc.address === group.creator_wallet
@@ -281,11 +275,11 @@ export default function GamePage() {
       };
 
       // Convert entered USDC to SOL using env rate
+      const solPerUsdc = Number(process.env.NEXT_PUBLIC_SOL_PER_USDC);
       if (!solPerUsdc || !isFinite(solPerUsdc) || solPerUsdc <= 0) {
-        openModal('Price unavailable', (
+        openModal('Configuration needed', (
           <div className="space-y-2">
-            <p className="text-neutral-300">Couldn’t fetch SOL price from Helius. Ensure NEXT_PUBLIC_HELIUS_API_KEY is set and try again.</p>
-            <p className="text-neutral-400 text-xs">We don’t use a fallback rate.</p>
+            <p className="text-neutral-300">Set NEXT_PUBLIC_SOL_PER_USDC in .env.local (e.g., 0.005 for $200/SOL) and restart the dev server.</p>
           </div>
         ));
         setPlacingBet(false);
@@ -307,6 +301,7 @@ export default function GamePage() {
       openModal('Bet submitted', (
         <div className="space-y-2">
           <p className="text-neutral-300">Your transaction was sent successfully.</p>
+          <p className="text-neutral-400 text-xs">If your Phantom balance doesn't update immediately, refresh the Phantom extension or wait a few seconds.</p>
           <a href={explorer} target="_blank" rel="noreferrer" className="text-cyan-300 underline">View on Solana Explorer</a>
         </div>
       ));
@@ -363,64 +358,193 @@ export default function GamePage() {
     }
   };
 
+  // Auto resolve and pay when betting closes, if treasury wallet is connected
+  // DISABLED: Use manual buttons instead for explicit control
+  useEffect(() => {
+    const maybeAutoResolve = async () => {
+      return; // Disabled - use manual buttons
+      if (!group || timeRemaining !== 'Betting closed' || autoPayoutDone) return;
+      const dest = (group as Group).treasury_wallet || process.env.NEXT_PUBLIC_TREASURY;
+      if (!dest) return;
+
+      const provider = (globalThis as any).solana;
+      if (!provider?.isPhantom) return;
+      try {
+        if (!provider.publicKey) await provider.connect();
+      } catch {
+        return;
+      }
+      if (!provider?.publicKey) return;
+      const sender = provider.publicKey.toBase58();
+      if (sender !== dest) return; // only auto-run for treasury
+
+      // Determine winning side by larger pool
+      const winning: 'yes' | 'no' = totalYesPool >= totalNoPool ? 'yes' : 'no';
+      const winnersTotal = winning === 'yes' ? totalYesPool : totalNoPool;
+      const losersTotal = winning === 'yes' ? totalNoPool : totalYesPool;
+      if (winnersTotal <= 0 || bets.length === 0) return;
+
+      // Build payouts in USDC first, then convert to SOL
+      const winners = bets.filter((b) => b.side === winning);
+      if (winners.length === 0) return;
+
+      const solPerUsdc = Number(process.env.NEXT_PUBLIC_SOL_PER_USDC);
+      if (!solPerUsdc || !isFinite(solPerUsdc) || solPerUsdc <= 0) return;
+
+      const transfers = winners
+        .map((b) => {
+          const share = b.bet_amount / winnersTotal; // user's % of winners pool
+          const payoutUsdc = b.bet_amount + share * losersTotal; // stake back + share of losers
+          const payoutSol = payoutUsdc * solPerUsdc; // convert to SOL
+          return { to: b.user_wallet, amountSol: payoutSol };
+        })
+        .filter((t) => t.amountSol > 0.000001);
+
+      if (transfers.length === 0) return;
+
+      try {
+        const sig = await distributePayouts({
+          fromWalletAddress: sender,
+          transfers,
+          signTransaction: async (tx: any) => provider.signTransaction(tx),
+        });
+        setAutoPayoutDone(true);
+        await supabase.from('groups').update({ 
+          resolved: true, 
+          winning_side: winning, 
+          resolved_at: new Date().toISOString() 
+        }).eq('id', (group as Group).id);
+        const explorer = `https://explorer.solana.com/tx/${sig}?cluster=testnet`;
+        openModal('Payouts disbursed', (
+          <div className="space-y-2">
+            <p className="text-neutral-300">Automatic payouts completed based on final pool percentages.</p>
+            <a href={explorer} target="_blank" rel="noreferrer" className="text-cyan-300 underline">View on Solana Explorer</a>
+          </div>
+        ));
+      } catch (e) {
+        // Silent fail; user can retry manually via buttons
+      }
+    };
+
+    maybeAutoResolve();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [group?.id, timeRemaining, autoPayoutDone, bets.length, totalYesPool, totalNoPool]);
+
   const handleResolveAndPay = async (winning: 'yes' | 'no') => {
     if (!group) return;
 
     try {
       const provider = (globalThis as any).solana;
-      if (!provider?.isPhantom || !provider?.publicKey) {
-        alert('Open Phantom and connect the treasury wallet to resolve.');
+      if (!provider?.isPhantom) {
+        openModal('Phantom needed', (
+          <div className="space-y-2">
+            <p className="text-neutral-300">Open Phantom and connect the treasury wallet to resolve.</p>
+          </div>
+        ));
+        return;
+      }
+      try {
+        if (!provider.publicKey) await provider.connect();
+      } catch {
+        openModal('Connection failed', (
+          <div className="space-y-2">
+            <p className="text-neutral-300">Phantom connection was rejected. Please approve and try again.</p>
+          </div>
+        ));
+        return;
+      }
+      if (!provider?.publicKey) {
+        openModal('No wallet', (
+          <div className="space-y-2">
+            <p className="text-neutral-300">Phantom did not provide a public key. Please reconnect.</p>
+          </div>
+        ));
         return;
       }
       const sender = provider.publicKey.toBase58();
-      const treasury = process.env.NEXT_PUBLIC_TREASURY;
-      if (!treasury) {
-        alert('NEXT_PUBLIC_TREASURY not set');
-        return;
-      }
-      if (sender !== treasury) {
-        alert('Switch Phantom to the treasury wallet to pay winners.');
-        return;
-      }
 
-      // Build proportional payouts from current bets
+      // Build proportional payouts: stake back + share of losers pool
       const totalYes = totalYesPool;
       const totalNo = totalNoPool;
       const poolWinnersTotal = winning === 'yes' ? totalYes : totalNo;
       const poolLosersTotal = winning === 'yes' ? totalNo : totalYes;
       if (poolWinnersTotal <= 0) {
-        alert('No winning bets to pay.');
+        openModal('No winners', (
+          <div className="space-y-2">
+            <p className="text-neutral-300">No winning bets to pay.</p>
+          </div>
+        ));
+        return;
+      }
+
+      const solPerUsdc = Number(process.env.NEXT_PUBLIC_SOL_PER_USDC);
+      if (!solPerUsdc || !isFinite(solPerUsdc) || solPerUsdc <= 0) {
+        openModal('Config needed', (
+          <div className="space-y-2">
+            <p className="text-neutral-300">Set NEXT_PUBLIC_SOL_PER_USDC in .env.local and restart.</p>
+          </div>
+        ));
         return;
       }
 
       const winners = bets.filter((b) => b.side === winning);
+      console.log('Calculating payouts:', {
+        winning,
+        winnersTotal: poolWinnersTotal,
+        losersTotal: poolLosersTotal,
+        winners: winners.map(b => ({ wallet: b.user_wallet, bet: b.bet_amount })),
+        solPerUsdc
+      });
+      
       const transfers = winners.map((b) => {
         const userShare = b.bet_amount / poolWinnersTotal; // fraction of winners pool
-        const payout = b.bet_amount + userShare * poolLosersTotal; // stake back + share of losers
-        return { to: b.user_wallet, amountSol: payout };
+        const payoutUsdc = b.bet_amount + userShare * poolLosersTotal; // stake back + share of losers
+        const payoutSol = payoutUsdc * solPerUsdc; // convert USDC to SOL
+        console.log(`Winner ${b.user_wallet}: bet=$${b.bet_amount}, share=${(userShare*100).toFixed(2)}%, payoutUsdc=$${payoutUsdc.toFixed(2)}, payoutSol=${payoutSol.toFixed(6)}`);
+        return { to: b.user_wallet, amountSol: payoutSol };
       }).filter(t => t.amountSol > 0.000001);
 
+      console.log('Final transfers to send:', transfers);
+
       if (transfers.length === 0) {
-        alert('No payouts to send.');
+        openModal('No transfers', (
+          <div className="space-y-2">
+            <p className="text-neutral-300">No payouts to send.</p>
+            <p className="text-neutral-400 text-xs">Winners: {winners.length}, Pool totals: Yes=${totalYes}, No=${totalNo}</p>
+          </div>
+        ));
         return;
       }
 
+      console.log('Sending payout transaction...');
       const sig = await distributePayouts({
         fromWalletAddress: sender,
         transfers,
         signTransaction: async (tx: any) => provider.signTransaction(tx),
       });
+      console.log('Payout transaction sent:', sig);
+      
+      await supabase.from('groups').update({ 
+        resolved: true, 
+        winning_side: winning, 
+        resolved_at: new Date().toISOString() 
+      }).eq('id', group.id);
       
       const explorer = `https://explorer.solana.com/tx/${sig}?cluster=testnet`;
       openModal('Payouts sent', (
         <div className="space-y-2">
-          <p className="text-neutral-300">Funds have been distributed to winners.</p>
+          <p className="text-neutral-300">Funds have been distributed to winners based on pool percentages.</p>
+          <p className="text-neutral-400 text-xs">Balances update automatically. If Phantom doesn't show the update immediately, refresh the extension or wait a few seconds.</p>
           <a href={explorer} target="_blank" rel="noreferrer" className="text-cyan-300 underline">View on Solana Explorer</a>
         </div>
       ));
     } catch (err) {
-      
-      alert('Error resolving and paying: ' + (err as Error).message);
+      openModal('Payout failed', (
+        <div className="space-y-2">
+          <p className="text-neutral-300">{(err as Error).message}</p>
+          <p className="text-neutral-400 text-xs">Please check wallet balance and try again.</p>
+        </div>
+      ));
     }
   };
 
@@ -602,6 +726,49 @@ export default function GamePage() {
             {group.bet_description || "No bet description provided"}
           </p>
         </div>
+
+        {/* Resolve & Pay Section (when betting closed) */}
+        {timeRemaining === "Betting closed" && (
+          <div className="rounded-2xl border border-yellow-400/30 bg-yellow-400/10 p-6 backdrop-blur-md mb-8">
+            <h3 className="text-lg font-normal text-yellow-300 mb-4">Resolve & Disburse Winnings</h3>
+            <p className="text-sm text-yellow-200 mb-4">Betting is closed. Select the winning side to distribute funds. Ensure your connected wallet has enough SOL to cover payouts.</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => handleResolveAndPay('yes')}
+                className="flex-1 rounded-xl bg-green-500/80 text-black px-4 py-3 hover:bg-green-400 font-medium"
+              >
+                YES Won → Pay Winners
+              </button>
+              <button
+                onClick={() => handleResolveAndPay('no')}
+                className="flex-1 rounded-xl bg-red-500/80 text-black px-4 py-3 hover:bg-red-400 font-medium"
+              >
+                NO Won → Pay Winners
+              </button>
+            </div>
+            <p className="text-xs text-yellow-200/80 mt-3">
+              Winners receive their stake back plus a proportional share of the losing pool based on their bet percentage.
+            </p>
+          </div>
+        )}
+
+        {/* Test: Close Betting Button */}
+        {timeRemaining !== "Betting closed" && (
+          <div className="rounded-2xl border border-orange-400/30 bg-orange-400/10 p-4 backdrop-blur-md mb-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-orange-300 font-medium">Test Mode</p>
+                <p className="text-xs text-orange-200/80">Close betting immediately to test payouts</p>
+              </div>
+              <button
+                onClick={() => setForceBettingClosed(true)}
+                className="rounded-xl bg-orange-500/80 text-black px-4 py-2 hover:bg-orange-400 font-medium text-sm"
+              >
+                Close Betting Now
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Place Bet Section */}
         {timeRemaining !== "Betting closed" && (

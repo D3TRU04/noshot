@@ -76,17 +76,18 @@ export async function placeRealBet({
 
     try {
       const sig = await trySend();
-      
+      console.log('Transaction successful:', sig);
       return { success: true, tx: sig };
     } catch (e: any) {
       // Retry once if blockhash or timing issues
       const message = String(e?.message || e);
       if (/blockhash/i.test(message) || /expired/i.test(message) || /not found/i.test(message)) {
-        
+        console.log('Retrying transaction due to:', message);
         const sig = await trySend();
-        
+        console.log('Transaction successful after retry:', sig);
         return { success: true, tx: sig };
       }
+      console.error('Transaction failed:', e);
       throw e;
     }
   } catch (error: any) {
@@ -125,12 +126,27 @@ export async function distributePayouts({
     throw new Error('No transfers specified');
   }
 
+  // Calculate total needed
+  const totalLamports = transfers.reduce((sum, t) => sum + Math.max(1, Math.floor(t.amountSol * LAMPORTS_PER_SOL)), 0);
+  const totalSol = totalLamports / LAMPORTS_PER_SOL;
+  console.log(`Paying out ${transfers.length} winners, total: ${totalSol.toFixed(6)} SOL`);
+  
+  // Check balance
+  const balance = await connection.getBalance(fromPubkey, 'confirmed');
+  const balanceSol = balance / LAMPORTS_PER_SOL;
+  console.log(`Sender balance: ${balanceSol.toFixed(6)} SOL, needed: ${totalSol.toFixed(6)} SOL`);
+  
+  if (balance < totalLamports) {
+    throw new Error(`Insufficient balance: have ${balanceSol.toFixed(6)} SOL, need ${totalSol.toFixed(6)} SOL`);
+  }
+
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
   const tx = new Transaction({ feePayer: fromPubkey, recentBlockhash: blockhash });
 
   for (const t of transfers) {
     const toPubkey = new PublicKey(t.to);
     const lamports = Math.max(1, Math.floor(t.amountSol * LAMPORTS_PER_SOL));
+    console.log(`  -> ${t.to.slice(0, 8)}...${t.to.slice(-4)}: ${(lamports / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
     tx.add(SystemProgram.transfer({ fromPubkey, toPubkey, lamports }));
   }
 
