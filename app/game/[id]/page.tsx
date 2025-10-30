@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { placeRealBet, distributePayouts } from "@/lib/solanaClient";
 import Logo from "@/components/Logo";
 import BackButton from "@/components/BackButton";
 import { usePrivy } from "@privy-io/react-auth";
@@ -18,6 +19,7 @@ type Group = {
   bet_description?: string;
   total_yes?: number;
   total_no?: number;
+  treasury_wallet?: string; // optional per-group destination
 };
 
 type Member = {
@@ -237,20 +239,30 @@ export default function GamePage() {
       });
 
       console.log("🚀 Processing bet transaction...");
-      
-      // Note: This is currently a database-only operation
-      // For real wallet charges on devnet, you need to:
-      // 1. Sign transaction with Phantom/Privy
-      // 2. Transfer USDC to vault on Solana devnet
-      // 3. Deploy smart contract to devnet
-      //
-      // Right now: Just saves to Supabase, no wallet deduction
-      
-      // Simulate transaction processing
-      console.log(`💵 Would charge wallet on devnet: $${betAmount} USDC`);
-      console.log(`📤 Would transfer to Solana smart contract vault on devnet`);
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      console.log("✅ Transaction simulated (mock mode - no wallet charge)");
+
+      // Real SOL transfer on selected cluster (uses NEXT_PUBLIC_SOLANA_RPC_URL)
+      const provider = (globalThis as any).solana;
+      if (!provider?.isPhantom || !provider?.publicKey) {
+        throw new Error('Phantom wallet not found. Please install/open Phantom and connect.');
+      }
+      const providerAddress = provider.publicKey.toBase58();
+      if (providerAddress !== walletAddress) {
+        console.warn('Connected Privy wallet differs from Phantom signer. Using Phantom as sender.', { providerAddress, walletAddress });
+      }
+
+      const signTransaction = async (tx: any) => {
+        return await provider.signTransaction(tx);
+      };
+
+      const { tx } = await placeRealBet({
+        walletAddress: providerAddress,
+        groupId: group.id,
+        amount: betAmount, // interpreted as SOL in current flow
+        side: betSide,
+        signTransaction,
+        toAddress: group.treasury_wallet || process.env.NEXT_PUBLIC_TREASURY,
+      });
+      console.log("✅ On-chain transfer signature:", tx);
 
       // Update the groups table with new pool totals
       const newYesPool = betSide === 'yes' ? (totalYesPool + betAmount) : totalYesPool;
@@ -301,6 +313,61 @@ export default function GamePage() {
       alert("Failed to place bet: " + (error as Error).message);
     } finally {
       setPlacingBet(false);
+    }
+  };
+
+  const handleResolveAndPay = async (winning: 'yes' | 'no') => {
+    if (!group) return;
+
+    try {
+      const provider = (globalThis as any).solana;
+      if (!provider?.isPhantom || !provider?.publicKey) {
+        alert('Open Phantom and connect the treasury wallet to resolve.');
+        return;
+      }
+      const sender = provider.publicKey.toBase58();
+      const treasury = process.env.NEXT_PUBLIC_TREASURY;
+      if (!treasury) {
+        alert('NEXT_PUBLIC_TREASURY not set');
+        return;
+      }
+      if (sender !== treasury) {
+        alert('Switch Phantom to the treasury wallet to pay winners.');
+        return;
+      }
+
+      // Build proportional payouts from current bets
+      const totalYes = totalYesPool;
+      const totalNo = totalNoPool;
+      const poolWinnersTotal = winning === 'yes' ? totalYes : totalNo;
+      const poolLosersTotal = winning === 'yes' ? totalNo : totalYes;
+      if (poolWinnersTotal <= 0) {
+        alert('No winning bets to pay.');
+        return;
+      }
+
+      const winners = bets.filter((b) => b.side === winning);
+      const transfers = winners.map((b) => {
+        const userShare = b.bet_amount / poolWinnersTotal; // fraction of winners pool
+        const payout = b.bet_amount + userShare * poolLosersTotal; // stake back + share of losers
+        return { to: b.user_wallet, amountSol: payout };
+      }).filter(t => t.amountSol > 0.000001);
+
+      if (transfers.length === 0) {
+        alert('No payouts to send.');
+        return;
+      }
+
+      const sig = await distributePayouts({
+        fromWalletAddress: sender,
+        transfers,
+        signTransaction: async (tx: any) => provider.signTransaction(tx),
+      });
+      console.log('✅ Payouts sent, signature:', sig);
+      alert('Payouts sent. Tx: ' + sig);
+    } catch (err) {
+      console.error('Error resolving and paying:', err);
+      alert('Error resolving and paying: ' + (err as Error).message);
     }
   };
 
@@ -445,8 +512,8 @@ export default function GamePage() {
           {/* Total Pool Card */}
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md">
             <h3 className="text-lg font-normal text-neutral-200 mb-2">Total Pool</h3>
-            <p className="text-2xl font-mono text-cyan-300">${(totalYesPool + totalNoPool).toFixed(2)}</p>
-            <p className="text-xs text-neutral-400 mt-1">USDC across all bets</p>
+            <p className="text-2xl font-mono text-cyan-300">{(totalYesPool + totalNoPool).toFixed(2)} SOL</p>
+            <p className="text-xs text-neutral-400 mt-1">SOL across all bets</p>
           </div>
         </div>
 
@@ -456,7 +523,7 @@ export default function GamePage() {
           <div className="grid grid-cols-2 gap-6">
             <div className="bg-green-400/10 border border-green-400/30 rounded-xl p-4">
               <p className="text-sm text-green-300 mb-2">YES Pool</p>
-              <p className="text-3xl font-mono text-green-300">${totalYesPool.toFixed(2)}</p>
+              <p className="text-3xl font-mono text-green-300">{totalYesPool.toFixed(2)} SOL</p>
               <p className="text-xs text-neutral-400 mt-1">
                 {totalYesPool + totalNoPool > 0 
                   ? `${((totalYesPool / (totalYesPool + totalNoPool)) * 100).toFixed(1)}% of pool`
@@ -465,7 +532,7 @@ export default function GamePage() {
             </div>
             <div className="bg-red-400/10 border border-red-400/30 rounded-xl p-4">
               <p className="text-sm text-red-300 mb-2">NO Pool</p>
-              <p className="text-3xl font-mono text-red-300">${totalNoPool.toFixed(2)}</p>
+              <p className="text-3xl font-mono text-red-300">{totalNoPool.toFixed(2)} SOL</p>
               <p className="text-xs text-neutral-400 mt-1">
                 {totalYesPool + totalNoPool > 0 
                   ? `${((totalNoPool / (totalYesPool + totalNoPool)) * 100).toFixed(1)}% of pool`
@@ -497,7 +564,7 @@ export default function GamePage() {
             <div className="space-y-4">
               {/* Bet Amount */}
               <div>
-                <label className="block text-sm text-neutral-300 mb-2">Bet Amount (USDC)</label>
+                <label className="block text-sm text-neutral-300 mb-2">Bet Amount (SOL)</label>
                 <input
                   type="number"
                   min="0.1"
@@ -543,9 +610,9 @@ export default function GamePage() {
               {potentialPayout.totalPayout > 0 && (
                 <div className="bg-gradient-to-r from-cyan-400/10 to-purple-400/10 border border-cyan-400/30 rounded-xl p-4">
                   <p className="text-sm text-neutral-400 mb-1">Potential Payout (if your side wins):</p>
-                  <p className="text-2xl font-mono text-cyan-300">${potentialPayout.totalPayout.toFixed(2)}</p>
+                  <p className="text-2xl font-mono text-cyan-300">{potentialPayout.totalPayout.toFixed(2)} SOL</p>
                   <p className="text-xs text-neutral-400 mt-1">
-                    ${potentialPayout.stakeBack.toFixed(2)} back + ${potentialPayout.shareOfLosers.toFixed(2)} from losers
+                    {potentialPayout.stakeBack.toFixed(2)} SOL back + {potentialPayout.shareOfLosers.toFixed(2)} SOL from losers
                   </p>
                 </div>
               )}
@@ -562,7 +629,7 @@ export default function GamePage() {
                     : 'bg-cyan-400 text-black hover:bg-cyan-300'
                 } disabled:bg-white/10 disabled:text-neutral-400 disabled:cursor-not-allowed`}
               >
-                {placingBet ? "🎯 Placing Bet..." : betAnimation !== 'none' ? "🎉 Bet Placed!" : `Place $${betAmount} Bet on ${betSide.toUpperCase()}`}
+                {placingBet ? "🎯 Placing Bet..." : betAnimation !== 'none' ? "🎉 Bet Placed!" : `Place ${betAmount} SOL Bet on ${betSide.toUpperCase()}`}
               </button>
             </div>
           </div>
@@ -588,7 +655,7 @@ export default function GamePage() {
                         {bet.user_wallet.slice(0, 8)}...{bet.user_wallet.slice(-4)}
                       </p>
                       <p className="text-xs text-neutral-500">
-                        ${bet.bet_amount} USDC
+                        {bet.bet_amount} SOL
                       </p>
                     </div>
                   </div>
@@ -599,6 +666,26 @@ export default function GamePage() {
               ))}
             </div>
           )}
+        </div>
+
+        {/* Resolve & Pay (treasury only) */}
+        <div className="rounded-2xl border border-yellow-400/30 bg-yellow-400/10 p-6 backdrop-blur-md mb-8">
+          <h3 className="text-lg font-normal text-yellow-300 mb-4">Admin: Resolve & Pay</h3>
+          <p className="text-xs text-yellow-200 mb-3">Switch Phantom to the treasury wallet to send payouts.</p>
+          <div className="flex gap-3">
+            <button
+              onClick={() => handleResolveAndPay('yes')}
+              className="rounded-xl bg-green-500/80 text-black px-4 py-2 hover:bg-green-400"
+            >
+              Resolve YES & Pay
+            </button>
+            <button
+              onClick={() => handleResolveAndPay('no')}
+              className="rounded-xl bg-red-500/80 text-black px-4 py-2 hover:bg-red-400"
+            >
+              Resolve NO & Pay
+            </button>
+          </div>
         </div>
 
         {/* Players List */}

@@ -1,9 +1,9 @@
-import { Connection, PublicKey, Keypair } from '@solana/web3.js';
+import { Connection, PublicKey, Keypair, SystemProgram, Transaction, LAMPORTS_PER_SOL, sendAndConfirmRawTransaction } from '@solana/web3.js';
 import { getAssociatedTokenAddress, createTransferInstruction, getAccount } from '@solana/spl-token';
 
 // Simplified Solana client for NoShot betting
 
-const DEVNET_RPC = 'https://api.devnet.solana.com';
+const DEFAULT_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 'https://api.devnet.solana.com';
 
 /**
  * Place a bet with real USDC transfer on devnet
@@ -11,55 +11,104 @@ const DEVNET_RPC = 'https://api.devnet.solana.com';
 export async function placeRealBet({
   walletAddress,
   groupId,
-  amount, // in USDC (with decimals)
+  amount,
   side,
   signTransaction,
+  toAddress,
 }: {
   walletAddress: string;
   groupId: string;
-  amount: number;
+  amount: number; // treated as SOL for testnet flow
   side: 'yes' | 'no';
-  signTransaction: any; // Privy wallet signer
+  signTransaction: (tx: Transaction) => Promise<Transaction>; // Privy wallet signer
+  toAddress?: string; // optional override for destination
 }) {
-  console.log('🚀 Starting REAL Solana transaction on devnet...');
-  
-  // TODO: Replace with deployed program ID after deployment
-  const PROGRAM_ID = process.env.NEXT_PUBLIC_PROGRAM_ID || 'YOUR_PROGRAM_ID';
-  
-  try {
-    const connection = new Connection(DEVNET_RPC, 'confirmed');
-    
-    // This would be the actual vault PDA
-    // const [vaultPDA] = await PublicKey.findProgramAddress(
-    //   [Buffer.from('vault'), new PublicKey(groupId).toBuffer()],
-    //   new PublicKey(PROGRAM_ID)
-    // );
-    
-    console.log('📝 Transaction details:', {
-      from: walletAddress,
-      to: `vault_PDA_for_group_${groupId}`,
-      amount: amount,
-      side: side
-    });
-    
-    // For now, show what would happen on devnet
-    console.log('✅ Would create transaction on devnet');
-    console.log('✅ Would require user signature');
-    console.log('✅ Would transfer USDC to vault on devnet');
-    console.log('✅ Would confirm on Solana devnet');
-    
-    // The actual implementation would be:
-    // const tx = await program.methods
-    //   .placeBet(...)
-    //   .accounts({...})
-    //   .rpc();
-    
-    return { success: true, tx: 'mock-tx-hash' };
-    
-  } catch (error) {
-    console.error('Error placing bet on Solana:', error);
-    throw error;
+  const rpcUrl = DEFAULT_RPC;
+  const connection = new Connection(rpcUrl, 'confirmed');
+  const fromPubkey = new PublicKey(walletAddress);
+  const destination = toAddress || process.env.NEXT_PUBLIC_TREASURY;
+  if (!destination) {
+    throw new Error('Missing destination: provide toAddress or set NEXT_PUBLIC_TREASURY');
   }
+  const toPubkey = new PublicKey(destination);
+
+  if (fromPubkey.equals(toPubkey)) {
+    console.warn('Sender and treasury are the same address; proceeding. Net effect will be only fees.', {
+      sender: fromPubkey.toBase58(),
+      treasury: toPubkey.toBase58(),
+    });
+  }
+
+  // Convert amount SOL -> lamports; ensure positive non-zero
+  const lamports = Math.max(1, Math.floor(amount * LAMPORTS_PER_SOL));
+
+  console.log('🚀 Sending real SOL transfer on RPC:', rpcUrl);
+  console.log('📝 Transfer details:', { from: fromPubkey.toBase58(), to: toPubkey.toBase58(), lamports, groupId, side });
+
+  try {
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+
+    const tx = new Transaction({ feePayer: fromPubkey, recentBlockhash: blockhash }).add(
+      SystemProgram.transfer({ fromPubkey, toPubkey, lamports })
+    );
+
+    // Request user signature via provided signer
+    const signed = await signTransaction(tx);
+
+    const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+
+    console.log('✅ Confirmed SOL transfer on cluster:', rpcUrl, 'signature:', sig);
+    return { success: true, tx: sig };
+  } catch (error: any) {
+    const enriched = new Error(
+      `Transfer failed: ${error?.message || error}. Check treasury and wallet network.`
+    );
+    // Attach logs if present
+    if (error && typeof error === 'object') {
+      (enriched as any).logs = (error as any).logs;
+    }
+    console.error('❌ Error placing bet (SOL transfer):', error?.message || error, (error as any)?.logs || []);
+    throw enriched;
+  }
+}
+
+/**
+ * Distribute SOL payouts from a single sending wallet to many recipients.
+ * The caller must have the sending wallet active in Phantom to sign.
+ */
+export async function distributePayouts({
+  fromWalletAddress,
+  transfers,
+  signTransaction,
+}: {
+  fromWalletAddress: string;
+  transfers: Array<{ to: string; amountSol: number }>;
+  signTransaction: (tx: Transaction) => Promise<Transaction>;
+}) {
+  const rpcUrl = DEFAULT_RPC;
+  const connection = new Connection(rpcUrl, 'confirmed');
+  const fromPubkey = new PublicKey(fromWalletAddress);
+
+  if (!Array.isArray(transfers) || transfers.length === 0) {
+    throw new Error('No transfers specified');
+  }
+
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+  const tx = new Transaction({ feePayer: fromPubkey, recentBlockhash: blockhash });
+
+  for (const t of transfers) {
+    const toPubkey = new PublicKey(t.to);
+    const lamports = Math.max(1, Math.floor(t.amountSol * LAMPORTS_PER_SOL));
+    tx.add(SystemProgram.transfer({ fromPubkey, toPubkey, lamports }));
+  }
+
+  const signed = await signTransaction(tx);
+  const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+
+  console.log('✅ Payout transaction confirmed:', sig);
+  return sig;
 }
 
 /**
