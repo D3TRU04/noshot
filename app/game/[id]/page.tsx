@@ -7,6 +7,7 @@ import { placeRealBet, distributePayouts } from "@/lib/solanaClient";
 import Logo from "@/components/Logo";
 import BackButton from "@/components/BackButton";
 import { usePrivy } from "@privy-io/react-auth";
+import { uploadProofImage, createProof, listProofs, setProofApproval, setOfficialOutcome, type Proof } from "@/lib/supabaseProofs";
 
 type Group = {
   id: string;
@@ -68,6 +69,11 @@ export default function GamePage() {
   const closeModal = () => setModal({ open: false, title: '', body: '' });
   const [autoPayoutDone, setAutoPayoutDone] = useState(false);
   const [forceBettingClosed, setForceBettingClosed] = useState(false);
+  const [proofs, setProofs] = useState<Proof[]>([]);
+  const [uploadingProof, setUploadingProof] = useState(false);
+  const [proofSide, setProofSide] = useState<'yes' | 'no'>('yes');
+  const [proofCaption, setProofCaption] = useState('');
+  const [proofFile, setProofFile] = useState<File | null>(null);
 
   useEffect(() => {
     if (!groupId) return;
@@ -129,6 +135,11 @@ export default function GamePage() {
       } else {
         setBets([]);
       }
+      // 4️⃣ Load proofs (image feed)
+      try {
+        const pf = await listProofs(groupId);
+        setProofs(pf);
+      } catch {}
       
       // Populate settings data only if group exists
       if (groupData) {
@@ -555,6 +566,70 @@ export default function GamePage() {
     }
   };
 
+  const handleUploadProof = async () => {
+    if (!user || !group) return;
+    const solanaWallet = user.linkedAccounts.find(
+      (acc: any) => acc.type === "wallet" && acc.chainType === "solana"
+    ) as { address?: string } | undefined;
+    const walletAddress = solanaWallet?.address;
+    if (!walletAddress) {
+      alert("No Solana wallet found. Please reconnect.");
+      return;
+    }
+    if (!proofFile) {
+      alert("Select an image first.");
+      return;
+    }
+    setUploadingProof(true);
+    try {
+      const imageUrl = await uploadProofImage(proofFile, group.id, walletAddress);
+      const created = await createProof({
+        groupId: group.id,
+        uploaderWallet: walletAddress,
+        side: proofSide,
+        imageUrl,
+        caption: proofCaption,
+      });
+      setProofs((cur) => [created, ...cur]);
+      setProofCaption('');
+      setProofFile(null);
+      openModal('Uploaded', (
+        <div className="space-y-2">
+          <p className="text-neutral-300">Your photo and vote were submitted. Waiting for creator approval.</p>
+        </div>
+      ));
+    } catch (e: any) {
+      openModal('Upload failed', (
+        <div className="space-y-2">
+          <p className="text-neutral-300">{e.message || 'Unexpected error'}</p>
+        </div>
+      ));
+    } finally {
+      setUploadingProof(false);
+    }
+  };
+
+  const handleApproveProof = async (proof: any) => {
+    if (!group) return;
+    try {
+      await setProofApproval({ proofId: proof.id, approved: true });
+      await setOfficialOutcome({ groupId: group.id, winningSide: proof.side, proofId: proof.id });
+      setProofs((cur) => cur.map((p) => p.id === proof.id ? { ...p, approved: true } : p));
+      setGroup({ ...group, resolved: true as any, winning_side: proof.side as any } as any);
+      openModal('Outcome set', (
+        <div className="space-y-2">
+          <p className="text-neutral-300">Official outcome set to {proof.side.toUpperCase()} by creator approval.</p>
+        </div>
+      ));
+    } catch (e: any) {
+      openModal('Approval failed', (
+        <div className="space-y-2">
+          <p className="text-neutral-300">{e.message || 'Unexpected error'}</p>
+        </div>
+      ));
+    }
+  };
+
   const handleSaveSettings = async () => {
     if (!group) return;
 
@@ -752,6 +827,94 @@ export default function GamePage() {
           </div>
         )}
 
+        {/* Outcome Proof Feed */}
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md mb-8">
+          <h3 className="text-lg font-normal text-neutral-200 mb-4">Outcome Proofs</h3>
+
+          {/* Upload */}
+          <div className="grid gap-4 md:grid-cols-3 md:gap-6 mb-6">
+            <div className="md:col-span-2">
+              <label className="block text-sm text-neutral-300 mb-2">Photo</label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setProofFile(e.target.files?.[0] || null)}
+                className="w-full rounded-xl bg-white/5 px-4 py-3 text-sm outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60"
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-neutral-300 mb-2">Your Vote</label>
+              <select
+                value={proofSide}
+                onChange={(e) => setProofSide(e.target.value as 'yes' | 'no')}
+                className="w-full rounded-xl bg-white/5 px-4 py-3 text-sm outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60"
+              >
+                <option value="yes">YES</option>
+                <option value="no">NO</option>
+              </select>
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm text-neutral-300 mb-2">Caption (optional)</label>
+              <input
+                type="text"
+                value={proofCaption}
+                onChange={(e) => setProofCaption(e.target.value)}
+                className="w-full rounded-xl bg-white/5 px-4 py-3 text-sm outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-cyan-300/60"
+                placeholder="Describe what this proves"
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                onClick={handleUploadProof}
+                disabled={uploadingProof || !proofFile}
+                className="w-full rounded-xl bg-cyan-400 text-black font-normal hover:bg-cyan-300 transition-colors px-4 py-3 disabled:bg-white/10 disabled:text-neutral-400"
+              >
+                {uploadingProof ? 'Uploading…' : 'Upload Proof'}
+              </button>
+            </div>
+          </div>
+
+          {/* Feed */}
+          {proofs.length === 0 ? (
+            <p className="text-neutral-400">No proofs yet. Be the first to upload.</p>
+          ) : (
+            <div className="grid gap-6 md:grid-cols-2">
+              {proofs.map((p) => (
+                <div key={p.id} className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+                  <div className="aspect-video bg-black/40">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={p.image_url} alt="proof" className="w-full h-full object-cover" />
+                  </div>
+                  <div className="p-4 flex items-start justify-between gap-3">
+                    <div>
+                      <p className={`text-xs ${p.side === 'yes' ? 'text-green-300' : 'text-red-300'}`}>{p.side.toUpperCase()}</p>
+                      <p className="text-xs text-neutral-500 font-mono mt-1">
+                        {p.uploader_wallet.slice(0, 8)}...{p.uploader_wallet.slice(-4)}
+                      </p>
+                      {p.caption && (
+                        <p className="text-sm text-neutral-300 mt-2">{p.caption}</p>
+                      )}
+                      <p className="text-[10px] text-neutral-500 mt-2">{new Date(p.created_at).toLocaleString()}</p>
+                    </div>
+                    <div className="flex flex-col items-end gap-2">
+                      {p.approved && (
+                        <span className="text-xs px-2 py-1 rounded bg-green-500/20 text-green-300 border border-green-500/30">Approved</span>
+                      )}
+                      {isCreator && !p.approved && (
+                        <button
+                          onClick={() => handleApproveProof(p)}
+                          className="rounded-lg bg-white/10 text-neutral-200 hover:bg-white/20 text-xs px-3 py-2"
+                        >
+                          Approve & Set Outcome
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         {/* Test: Close Betting Button */}
         {timeRemaining !== "Betting closed" && (
           <div className="rounded-2xl border border-orange-400/30 bg-orange-400/10 p-4 backdrop-blur-md mb-8">
